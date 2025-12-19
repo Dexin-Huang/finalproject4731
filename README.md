@@ -1,8 +1,10 @@
-# Basketball Free Throw Prediction
+# SWISH
 
-**COMS4731 Computer Vision - Columbia University - Fall 2025**
+**Skeletal Wrist Inference for Shot prediction in Hoops**
 
-Predicting basketball free throw outcomes (make/miss) from body pose at the moment of release.
+*COMS4731 Computer Vision - Columbia University - Fall 2025*
+
+Predicting basketball free throw outcomes (make/miss) from 3D body pose at the moment of release using deep learning on skeletal graphs.
 
 ## Results
 
@@ -31,8 +33,8 @@ The model achieves **100% accuracy** on high-confidence miss predictions.
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/finalproject4731.git
-cd finalproject4731
+git clone https://github.com/Dexin-Huang/SWISH.git
+cd SWISH
 
 # Create virtual environment
 python -m venv venv
