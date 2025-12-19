@@ -145,6 +145,21 @@ python src/build_features_mhr70.py \
 4. **Classification**: KeyJointNet with 15 key upper body joints
 5. **Calibration**: Platt scaling + threshold optimization (0.64)
 
+### Make vs Miss Pose Comparison
+
+<table>
+  <tr>
+    <td align="center"><strong>Successful Release (MAKE)</strong></td>
+    <td align="center"><strong>Failed Release (MISS)</strong></td>
+  </tr>
+  <tr>
+    <td><img src="figures/sample_make_release.jpg" alt="Make" width="400"></td>
+    <td><img src="figures/sample_miss_release.jpg" alt="Miss" width="400"></td>
+  </tr>
+</table>
+
+<p align="center"><em>The model learns subtle differences in elbow alignment, wrist position, and follow-through mechanics</em></p>
+
 ## Technical Details
 
 - **Architecture**: KeyJointNet - joint attention + temporal CNN (72K params)
@@ -169,4 +184,3 @@ python src/build_features_mhr70.py \
 - Irene Nam (yn2334@columbia.edu)
 
 Columbia University COMS4731 - Fall 2025
-
