@@ -20,6 +20,7 @@
 \usepackage{titlesec}
 \usepackage{enumitem}
 \usepackage{cite}
+\usepackage{tabularx}
 
 % Page geometry
 \geometry{
@@ -440,7 +441,7 @@ Characteristics of the app model run:
     \centering
     \caption{Model comparison on merged dataset (174 samples). Key Joints with threshold optimization achieves best results.}
     \label{tab:main_results}
-    \begin{tabular}{lcccc}
+    \begin{tabularx}{\linewidth}{Xcccc}
         \toprule
         Model & Acc. & Std & AUC & Params \\
         \midrule
@@ -450,7 +451,7 @@ Characteristics of the app model run:
         Temporal CNN & 68.8\% & $\pm$5.4\% & 0.65 & 146K \\
         MLP Baseline & 68.6\% & $\pm$8.9\% & 0.61 & 679K \\
         \bottomrule
-    \end{tabular}
+    \end{tabularx}
 \end{table}
 
 \textbf{Key Observations:}
@@ -650,7 +651,7 @@ Our results show pose-based models (91.95\% accuracy with optimization) substant
     \centering
     \caption{Comparison to prior basketball analytics work.}
     \label{tab:comparison}
-    \begin{tabular}{lccc}
+    \begin{tabularx}{\linewidth}{Xccc}
         \toprule
         Work & Task & Acc. & Notes \\
         \midrule
@@ -658,7 +659,7 @@ Our results show pose-based models (91.95\% accuracy with optimization) substant
         Tran & Form analysis & 65\% & 2D only \\
         \textbf{Ours} & \textbf{Release pred.} & \textbf{91.95\%} & \textbf{3D + threshold opt.} \\
         \bottomrule
-    \end{tabular}
+    \end{tabularx}
 \end{table}
 
 The key distinction is temporal: we predict at release, before trajectory is available.

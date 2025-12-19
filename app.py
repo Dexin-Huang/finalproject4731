@@ -1,24 +1,23 @@
-# app_realtime.py - Real-Time Live Game Simulation with REAL Model Predictions
+# app.py - Real-Time Live Game Simulation with KeyJointNet Model
 """
 Simulates live game betting experience with side-by-side layout:
 - Left: Video playing in real-time
-- Right: Prediction result from trained ST-GCN model
+- Right: Prediction result from trained KeyJointNet model
 
 Hit SPACEBAR at release moment → instant prediction from actual model!
 
 Usage:
-    streamlit run app_realtime.py
+    streamlit run app.py
 
 Requirements:
     - models/best_merged_calibrated.pth (trained model)
-    - src/models/stgcn.py (model architecture)
 """
 
 import streamlit as st
 import streamlit.components.v1 as components
 import torch
+import torch.nn as nn
 import numpy as np
-import cv2
 import tempfile
 import os
 import base64
@@ -37,76 +36,106 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Force dark mode CSS
+# Dark mode CSS
 st.markdown("""
 <style>
-    .stApp {
-        background-color: #0a0a0f !important;
-    }
-    [data-testid="stAppViewContainer"] {
-        background-color: #0a0a0f !important;
-    }
-    [data-testid="stFileUploader"] {
-        background-color: #1a1a2e !important;
-        border-radius: 10px;
-        padding: 10px;
-    }
-    [data-testid="stFileUploader"] section {
-        background-color: #1a1a2e !important;
-        border-color: #4b5563 !important;
-    }
-    [data-testid="stFileUploader"] button {
-        background-color: #f97316 !important;
-        color: white !important;
-    }
-    .stApp p, .stApp span, .stApp label, .stApp div {
-        color: #e5e7eb !important;
-    }
+    .stApp { background-color: #0a0a0f !important; }
+    [data-testid="stAppViewContainer"] { background-color: #0a0a0f !important; }
+    [data-testid="stFileUploader"] { background-color: #1a1a2e !important; border-radius: 10px; padding: 10px; }
+    [data-testid="stFileUploader"] section { background-color: #1a1a2e !important; border-color: #4b5563 !important; }
+    [data-testid="stFileUploader"] button { background-color: #f97316 !important; color: white !important; }
+    .stApp p, .stApp span, .stApp label, .stApp div { color: #e5e7eb !important; }
     .block-container { padding-top: 1rem; padding-bottom: 0; }
     header { visibility: hidden; }
-    .main-title {
-        font-size: 1.6rem;
-        font-weight: 700;
-        color: #f97316 !important;
-        text-align: center;
-        margin-bottom: 0.5rem;
-    }
-    .subtitle {
-        color: #6b7280 !important;
-        text-align: center;
-        font-size: 0.9rem;
-        margin-bottom: 1rem;
-    }
-    hr {
-        border-color: #374151 !important;
-    }
+    .main-title { font-size: 1.6rem; font-weight: 700; color: #f97316 !important; text-align: center; margin-bottom: 0.5rem; }
+    .subtitle { color: #6b7280 !important; text-align: center; font-size: 0.9rem; margin-bottom: 1rem; }
+    hr { border-color: #374151 !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# ==================== MODEL LOADING ====================
+
+# ==================== MODEL DEFINITION ====================
+
+class KeyJointNet(nn.Module):
+    """KeyJointNet model for free throw prediction."""
+
+    def __init__(self, num_joints=15, in_channels=9, hidden_dim=64, dropout=0.4):
+        super().__init__()
+        self.num_joints = num_joints
+        self.in_channels = in_channels
+        self.hidden_dim = hidden_dim
+
+        self.joint_attn = nn.Sequential(
+            nn.Linear(num_joints, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, num_joints),
+            nn.Softmax(dim=-1)
+        )
+
+        self.temporal = nn.Sequential(
+            nn.Conv1d(in_channels * num_joints, hidden_dim, kernel_size=3, padding=1),
+            nn.BatchNorm1d(hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Conv1d(hidden_dim, hidden_dim * 2, kernel_size=3, padding=1),
+            nn.BatchNorm1d(hidden_dim * 2),
+            nn.ReLU(),
+        )
+
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim * 2, 2)
+        )
+
+    def forward(self, x):
+        N, C, T, V = x.shape
+        joint_var = x.var(dim=(1, 2))
+        attn = self.joint_attn(joint_var)
+        x = x * attn.unsqueeze(1).unsqueeze(2)
+        x = x.permute(0, 1, 3, 2).contiguous().view(N, C * V, T)
+        x = self.temporal(x)
+        x = self.pool(x).squeeze(-1)
+        return self.classifier(x)
+
+
+# ==================== CONFIG ====================
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 MODEL_PATH = "models/best_merged_calibrated.pth"
 
+# Key joints (from model_info.json)
+KEY_JOINTS = [0, 5, 6, 7, 8, 41, 62, 9, 10, 69, 21, 25, 29, 64, 66]
+
+# Platt scaling calibration (from model_info.json)
+CALIBRATION_COEF = 2.4002755160298297
+CALIBRATION_INTERCEPT = -1.8751197453911295
+OPTIMAL_THRESHOLD = 0.64
+
+
+def apply_calibration(raw_prob):
+    """Apply Platt scaling calibration."""
+    logit = CALIBRATION_COEF * raw_prob + CALIBRATION_INTERCEPT
+    return 1 / (1 + np.exp(-logit))
+
 
 @st.cache_resource
 def load_model():
-    """Load the trained ST-GCN model"""
+    """Load the trained KeyJointNet model."""
     try:
-        from src.models.stgcn import STGCN
-
-        model = STGCN(
-            in_channels=9,  # x, y, z, vx, vy, vz, ax, ay, az
-            num_class=2,  # make/miss
-            graph_args={'layout': 'smpl', 'strategy': 'spatial'},
-            edge_importance_weighting=True
-        )
-
         if not os.path.exists(MODEL_PATH):
             logger.error(f"Model not found at {MODEL_PATH}")
             return None
 
         checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
+
+        config = checkpoint.get('model_config', {})
+        model = KeyJointNet(
+            num_joints=config.get('num_joints', 15),
+            in_channels=config.get('in_channels', 9),
+            hidden_dim=config.get('hidden_dim', 64)
+        )
+
         if 'model_state_dict' in checkpoint:
             model.load_state_dict(checkpoint['model_state_dict'])
         else:
@@ -114,7 +143,8 @@ def load_model():
 
         model.to(DEVICE)
         model.eval()
-        logger.info(f"✓ Model loaded from {MODEL_PATH}")
+
+        logger.info(f"✓ KeyJointNet loaded | Acc: {checkpoint.get('mean_accuracy', 0):.1%}")
         return model
 
     except Exception as e:
@@ -123,20 +153,10 @@ def load_model():
 
 
 def extract_pose_from_frame(frame, video_path=None, frame_idx=0):
-    """
-    Extract 3D pose sequence from video frame.
-
-    In production, this should use:
-    - SAM3D Body API for accurate 3D pose
-    - Or MediaPipe + depth estimation
-
-    For now, tries to load pre-extracted poses from enhanced_all.json
-    if available, otherwise returns mock data.
-    """
-    # Try to load pre-extracted pose from dataset
+    """Extract pose from pre-computed features or return mock data."""
     json_paths = [
         "data/features/enhanced_all.json",
-        "data/features/enhanced_clean.json",
+        "data/features/enhanced_labeled.json",
     ]
 
     for json_path in json_paths:
@@ -145,88 +165,64 @@ def extract_pose_from_frame(frame, video_path=None, frame_idx=0):
                 with open(json_path, 'r') as f:
                     data = json.load(f)
 
-                # If we have a video path, try to match it
                 if video_path:
                     video_name = os.path.basename(video_path).replace('.mp4', '').replace('.mov', '').replace('.avi',
                                                                                                               '')
+
                     for entry in data:
-                        if video_name in entry.get('video_id', ''):
-                            # Found matching entry - extract pose features
-                            frames_data = entry.get('frames', [])
-                            if frames_data:
-                                # Build pose sequence from keypoints_3d
-                                T = min(4, len(frames_data))
-                                V = 25  # number of joints (use first 25)
-                                C = 9  # features per joint
+                        if video_name in entry.get('video_id', '') or entry.get('video_id', '') in video_name:
+                            kp = np.array(entry.get('keypoints_3d', []))
+                            vel = np.array(entry.get('velocity', [])) if entry.get('velocity') else np.zeros_like(kp)
+                            acc = np.array(entry.get('acceleration', [])) if entry.get(
+                                'acceleration') else np.zeros_like(kp)
 
-                                pose_sequence = np.zeros((T, V, C), dtype=np.float32)
+                            if kp.size > 0:
+                                V_total = kp.shape[1]
+                                valid_joints = [j if j < V_total else 0 for j in KEY_JOINTS]
 
-                                for t, frame_data in enumerate(frames_data[:T]):
-                                    kp3d = frame_data.get('keypoints_3d', [])
-                                    for v in range(min(V, len(kp3d))):
-                                        if len(kp3d[v]) >= 3:
-                                            # x, y, z positions
-                                            pose_sequence[t, v, 0] = kp3d[v][0]
-                                            pose_sequence[t, v, 1] = kp3d[v][1]
-                                            pose_sequence[t, v, 2] = kp3d[v][2]
-                                            # velocities and accelerations will be computed
+                                kp_sel = kp[:, valid_joints, :]
+                                vel_sel = vel[:, valid_joints, :]
+                                acc_sel = acc[:, valid_joints, :]
 
-                                # Compute velocities (vx, vy, vz)
-                                for t in range(1, T):
-                                    pose_sequence[t, :, 3:6] = pose_sequence[t, :, 0:3] - pose_sequence[t - 1, :, 0:3]
+                                pose = np.concatenate([kp_sel, vel_sel, acc_sel], axis=-1)
 
-                                # Compute accelerations (ax, ay, az)
-                                for t in range(2, T):
-                                    pose_sequence[t, :, 6:9] = pose_sequence[t, :, 3:6] - pose_sequence[t - 1, :, 3:6]
+                                # Ensure 4 frames
+                                while pose.shape[0] < 4:
+                                    pose = np.concatenate([pose, pose[-1:]], axis=0)
+                                pose = pose[:4]
 
-                                logger.info(f"✓ Loaded pose from dataset for {video_name}")
-                                return pose_sequence, entry.get('label', None)
+                                logger.info(f"✓ Loaded pose for {video_name}")
+                                return pose.astype(np.float32), entry.get('label')
 
             except Exception as e:
-                logger.warning(f"Error loading poses: {e}")
+                logger.warning(f"Error: {e}")
 
-    # Fallback: return mock data (random poses)
-    logger.warning("⚠ Using mock pose data - integrate real pose extraction for production")
-    T, V, C = 4, 25, 9
-    pose_sequence = np.random.randn(T, V, C).astype(np.float32) * 0.1
-    return pose_sequence, None
+    logger.warning("⚠ Using mock pose data")
+    return np.random.randn(4, len(KEY_JOINTS), 9).astype(np.float32) * 0.1, None
 
 
 def predict_with_model(model, pose_sequence):
-    """
-    Run prediction using the trained ST-GCN model.
-
-    Args:
-        model: Loaded ST-GCN model
-        pose_sequence: numpy array of shape (T, V, C)
-                      T = temporal frames (4)
-                      V = joints (25)
-                      C = channels (9: x,y,z,vx,vy,vz,ax,ay,az)
-
-    Returns:
-        dict with prediction results
-    """
+    """Run prediction with calibration."""
     try:
-        # Convert to tensor: (T, V, C) -> (1, C, T, V, 1)
         pose_tensor = torch.from_numpy(pose_sequence).float()
-        pose_tensor = pose_tensor.permute(2, 0, 1)  # (C, T, V)
-        pose_tensor = pose_tensor.unsqueeze(0).unsqueeze(-1)  # (1, C, T, V, 1)
-        pose_tensor = pose_tensor.to(DEVICE)
+        pose_tensor = pose_tensor.permute(2, 0, 1).unsqueeze(0).to(DEVICE)  # (1, C, T, V)
 
-        # Run inference
         with torch.no_grad():
             output = model(pose_tensor)
             probs = torch.softmax(output, dim=1)
 
-        miss_prob = probs[0, 0].item()
-        make_prob = probs[0, 1].item()
-        confidence = abs(make_prob - 0.5) * 2
+        raw_make = probs[0, 1].item()
+        cal_make = apply_calibration(raw_make)
+
+        prediction = 'MAKE' if cal_make > OPTIMAL_THRESHOLD else 'MISS'
+        confidence = min(abs(cal_make - OPTIMAL_THRESHOLD) / 0.36 * 1.5, 1.0)
 
         return {
-            'make_prob': make_prob,
-            'miss_prob': miss_prob,
+            'make_prob': cal_make,
+            'miss_prob': 1 - cal_make,
             'confidence': confidence,
-            'prediction': 'MAKE' if make_prob > 0.5 else 'MISS'
+            'prediction': prediction,
+            'threshold': OPTIMAL_THRESHOLD
         }
 
     except Exception as e:
@@ -240,497 +236,157 @@ st.markdown('<p class="main-title">🎮 Live Game Mode</p>', unsafe_allow_html=T
 st.markdown('<p class="subtitle">Watch video → Hit SPACEBAR at release → See prediction instantly</p>',
             unsafe_allow_html=True)
 
-# Load model
 model = load_model()
-model_status = "🟢 Model Ready" if model else "🔴 Model Not Found (run training first)"
+model_status = "🟢 KeyJointNet Ready" if model else "🔴 Model Not Found"
 
-# File upload
 video_file = st.file_uploader("Upload free throw video", type=['mp4', 'mov', 'avi'], label_visibility="collapsed")
 
 if video_file:
-    # Save video temporarily
     with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp:
         tmp.write(video_file.read())
         video_path = tmp.name
 
-    # Convert video to base64 for embedding
     with open(video_path, 'rb') as f:
-        video_bytes = f.read()
-    video_b64 = base64.b64encode(video_bytes).decode()
+        video_b64 = base64.b64encode(f.read()).decode()
 
-    # Get video filename for matching
-    video_filename = video_file.name if hasattr(video_file, 'name') else "unknown"
-
-    # Pre-compute prediction using model
     prediction_result = None
     ground_truth_label = None
 
     if model:
-        # Extract pose and run model prediction
         pose_sequence, gt_label = extract_pose_from_frame(None, video_path)
         ground_truth_label = gt_label
         prediction_result = predict_with_model(model, pose_sequence)
-
         if prediction_result:
-            logger.info(f"Prediction: {prediction_result['prediction']} "
-                        f"(make: {prediction_result['make_prob']:.1%}, "
-                        f"miss: {prediction_result['miss_prob']:.1%})")
+            logger.info(f"Prediction: {prediction_result['prediction']} ({prediction_result['make_prob']:.1%})")
 
-    # Prepare prediction data for JavaScript
-    if prediction_result:
-        pred_json = json.dumps(prediction_result)
-    else:
-        pred_json = json.dumps({'make_prob': 0.5, 'miss_prob': 0.5, 'confidence': 0, 'prediction': 'NO MODEL'})
+    pred_json = json.dumps(
+        prediction_result or {'make_prob': 0.5, 'miss_prob': 0.5, 'confidence': 0, 'prediction': 'NO MODEL'})
+    gt_json = json.dumps(ground_truth_label)
 
-    gt_json = json.dumps(ground_truth_label) if ground_truth_label is not None else "null"
-
-    # Side-by-side HTML component
     html_code = f"""
     <!DOCTYPE html>
     <html>
     <head>
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-            body {{ 
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; 
-                background: #0a0a0f; 
-                color: white;
-                padding: 10px;
-            }}
-
-            .layout {{
-                display: grid;
-                grid-template-columns: 1fr 260px;
-                gap: 15px;
-                max-width: 1100px;
-                margin: 0 auto;
-            }}
-
-            .video-section {{
-                display: flex;
-                flex-direction: column;
-            }}
-
-            .video-wrap {{
-                position: relative;
-                background: #000;
-                border-radius: 8px;
-                overflow: hidden;
-            }}
-
-            video {{
-                width: 100%;
-                display: block;
-            }}
-
-            .flash {{
-                position: absolute;
-                inset: 0;
-                background: white;
-                opacity: 0;
-                pointer-events: none;
-            }}
-
-            .flash.active {{
-                animation: flashAnim 0.15s ease-out;
-            }}
-
-            @keyframes flashAnim {{
-                0% {{ opacity: 0.7; }}
-                100% {{ opacity: 0; }}
-            }}
-
-            .overlay {{
-                position: absolute;
-                inset: 0;
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                background: rgba(0,0,0,0.75);
-                opacity: 0;
-                pointer-events: none;
-                transition: opacity 0.2s;
-            }}
-
-            .overlay.show {{ opacity: 1; }}
-
-            .status-row {{
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                padding: 8px 12px;
-                background: #1a1a2e;
-                border-radius: 6px;
-                margin-top: 8px;
-            }}
-
-            .status {{ font-size: 0.9rem; }}
-            .status.wait {{ color: #fbbf24; }}
-            .status.play {{ color: #3b82f6; }}
-            .status.done {{ color: #10b981; }}
-
-            .timer {{
-                font-family: 'SF Mono', 'Courier New', monospace;
-                font-size: 1.2rem;
-                color: #f97316;
-            }}
-
-            .btns {{
-                display: flex;
-                gap: 8px;
-                margin-top: 8px;
-                justify-content: center;
-            }}
-
-            button {{
-                background: #f97316;
-                color: white;
-                border: none;
-                padding: 10px 24px;
-                font-size: 0.95rem;
-                border-radius: 5px;
-                cursor: pointer;
-                transition: all 0.15s;
-            }}
-
-            button:hover {{ background: #fb923c; }}
-            button.sec {{ background: #374151; }}
-            button.sec:hover {{ background: #4b5563; }}
-
-            .hint-box {{
-                margin-top: 12px;
-                padding: 12px;
-                background: rgba(249, 115, 22, 0.08);
-                border: 1px solid rgba(249, 115, 22, 0.3);
-                border-radius: 8px;
-                text-align: center;
-            }}
-
-            .hint-box .icon {{ font-size: 1.5rem; margin-bottom: 4px; }}
-            .hint-box .text {{ color: #9ca3af; font-size: 0.85rem; }}
-            .hint-box .key {{
-                display: inline-block;
-                background: rgba(249, 115, 22, 0.2);
-                border: 1px solid #f97316;
-                color: #f97316;
-                padding: 4px 12px;
-                border-radius: 4px;
-                font-size: 0.8rem;
-                margin-top: 6px;
-            }}
-
-            .result-section {{
-                background: linear-gradient(135deg, #1a1a2e, #252540);
-                border-radius: 10px;
-                padding: 15px;
-                display: flex;
-                flex-direction: column;
-                justify-content: center;
-                align-items: center;
-                text-align: center;
-            }}
-
-            .result-section.has-result {{
-                border: 2px solid #10b981;
-            }}
-
-            .waiting-result {{
-                color: #4b5563;
-                font-size: 0.9rem;
-            }}
-
-            .waiting-result .dash {{
-                font-size: 2rem;
-                color: #374151;
-                margin-bottom: 5px;
-            }}
-
-            .result {{ display: none; }}
-            .result.show {{ display: block; animation: pop 0.25s ease-out; }}
-
-            @keyframes pop {{
-                0% {{ opacity: 0; transform: scale(0.9); }}
-                100% {{ opacity: 1; transform: scale(1); }}
-            }}
-
-            .prediction {{
-                font-size: 1.8rem;
-                font-weight: 700;
-                padding: 10px 24px;
-                border-radius: 10px;
-                margin-bottom: 8px;
-            }}
-
-            .prediction.make {{
-                background: linear-gradient(135deg, #059669, #10b981);
-                box-shadow: 0 0 25px rgba(16, 185, 129, 0.4);
-            }}
-
-            .prediction.miss {{
-                background: linear-gradient(135deg, #dc2626, #ef4444);
-                box-shadow: 0 0 25px rgba(239, 68, 68, 0.4);
-            }}
-
-            .prediction.nobet {{
-                background: linear-gradient(135deg, #4b5563, #6b7280);
-            }}
-
-            .probs {{
-                color: #9ca3af;
-                font-size: 0.85rem;
-                margin-bottom: 8px;
-            }}
-
-            .thumb {{
-                max-width: 140px;
-                border: 2px solid #10b981;
-                border-radius: 5px;
-                margin: 6px 0;
-            }}
-
-            .captime {{
-                color: #6b7280;
-                font-size: 0.75rem;
-            }}
-
-            .model-badge {{
-                font-size: 0.7rem;
-                padding: 2px 8px;
-                border-radius: 4px;
-                margin-top: 8px;
-            }}
-
-            .model-badge.real {{
-                background: rgba(16, 185, 129, 0.2);
-                color: #10b981;
-                border: 1px solid #10b981;
-            }}
-
-            .model-badge.mock {{
-                background: rgba(245, 158, 11, 0.2);
-                color: #f59e0b;
-                border: 1px solid #f59e0b;
-            }}
+            body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0a0a0f; color: #e5e7eb; }}
+            .container {{ display: flex; gap: 20px; padding: 10px; height: 540px; }}
+            .video-section {{ flex: 1.4; display: flex; flex-direction: column; }}
+            .video-wrapper {{ position: relative; background: #000; border-radius: 12px; overflow: hidden; flex: 1; }}
+            video {{ width: 100%; height: 100%; object-fit: contain; }}
+            .flash {{ position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: white; opacity: 0; pointer-events: none; transition: opacity 0.05s; }}
+            .flash.active {{ opacity: 0.8; }}
+            .overlay {{ position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(0.5); background: rgba(249, 115, 22, 0.95); color: white; padding: 15px 30px; border-radius: 10px; font-size: 1.4rem; font-weight: 700; opacity: 0; transition: all 0.15s; pointer-events: none; }}
+            .overlay.show {{ opacity: 1; transform: translate(-50%, -50%) scale(1); }}
+            .controls {{ display: flex; gap: 10px; margin-top: 10px; align-items: center; }}
+            .btn {{ padding: 10px 24px; border: none; border-radius: 8px; font-weight: 600; cursor: pointer; font-size: 0.95rem; transition: all 0.15s; }}
+            .btn-play {{ background: #f97316; color: white; }}
+            .btn-play:hover {{ background: #ea580c; }}
+            .btn-reset {{ background: #374151; color: #e5e7eb; }}
+            .status {{ flex: 1; text-align: center; padding: 10px; border-radius: 8px; font-weight: 500; }}
+            .status.wait {{ background: #1f2937; color: #9ca3af; }}
+            .status.play {{ background: #065f46; color: #6ee7b7; }}
+            .status.done {{ background: #7c2d12; color: #fdba74; }}
+            .timer {{ font-family: monospace; font-size: 1.1rem; color: #f97316; min-width: 90px; }}
+            .key {{ background: #374151; padding: 6px 12px; border-radius: 6px; font-family: monospace; font-size: 0.85rem; }}
+            .result-section {{ flex: 0.6; background: #111827; border-radius: 12px; padding: 20px; display: flex; flex-direction: column; justify-content: center; align-items: center; min-width: 260px; }}
+            .waiting-result {{ text-align: center; color: #6b7280; }}
+            .waiting-result .dash {{ font-size: 3rem; margin-bottom: 10px; }}
+            .result {{ text-align: center; display: none; }}
+            .result.show {{ display: block; }}
+            .prediction {{ font-size: 2rem; font-weight: 800; margin-bottom: 15px; padding: 15px 25px; border-radius: 12px; }}
+            .prediction.make {{ background: linear-gradient(135deg, #065f46, #047857); color: #6ee7b7; }}
+            .prediction.miss {{ background: linear-gradient(135deg, #7f1d1d, #991b1b); color: #fca5a5; }}
+            .prediction.nobet {{ background: #374151; color: #9ca3af; }}
+            .probs {{ color: #9ca3af; font-size: 0.95rem; margin-bottom: 15px; line-height: 1.6; }}
+            .thumb {{ border-radius: 8px; border: 2px solid #374151; margin-bottom: 8px; }}
+            .captime {{ font-size: 0.8rem; color: #6b7280; margin-bottom: 10px; }}
+            .model-badge {{ font-size: 0.75rem; padding: 4px 10px; border-radius: 20px; margin-top: 5px; }}
+            .model-badge.real {{ background: #065f46; color: #6ee7b7; }}
         </style>
     </head>
     <body>
-        <div class="layout">
+        <div class="container">
             <div class="video-section">
-                <div class="video-wrap">
-                    <video id="vid" src="data:video/mp4;base64,{video_b64}"></video>
+                <div class="video-wrapper">
+                    <video id="vid" src="data:video/mp4;base64,{video_b64}" preload="auto"></video>
                     <div class="flash" id="flash"></div>
-                    <div class="overlay" id="overlay">
-                        <div>
-                            <div style="font-size:2.5rem">📸</div>
-                            <div>Captured!</div>
-                        </div>
-                    </div>
+                    <div class="overlay" id="overlay">📸 CAPTURED!</div>
                 </div>
-                <div class="status-row">
-                    <span class="status wait" id="status">Press PLAY → SPACEBAR at release</span>
-                    <span class="timer" id="timer">0:00.000</span>
-                </div>
-                <div class="btns">
-                    <button id="playBtn" onclick="toggle()">▶ PLAY</button>
-                    <button class="sec" onclick="reset()">↺ RESET</button>
-                </div>
-                <div class="hint-box">
-                    <div class="icon">🎯</div>
-                    <div class="text">Press <strong>SPACEBAR</strong> at the release moment</div>
+                <div class="controls">
+                    <button class="btn btn-play" id="playBtn" onclick="toggle()">▶ PLAY</button>
+                    <button class="btn btn-reset" onclick="reset()">↺ RESET</button>
+                    <div class="status wait" id="status">Press PLAY → SPACEBAR at release</div>
+                    <div class="timer" id="timer">0:00.000</div>
                     <div class="key">⎵ SPACEBAR</div>
                 </div>
             </div>
-
             <div class="result-section" id="resultBox">
-                <div class="waiting-result" id="waiting">
-                    <div class="dash">—</div>
-                    <div>Prediction will<br>appear here</div>
-                </div>
+                <div class="waiting-result" id="waiting"><div class="dash">—</div><div>Prediction here</div></div>
                 <div class="result" id="result">
                     <div class="prediction" id="pred">-</div>
                     <div class="probs" id="probs"></div>
                     <canvas id="thumb" class="thumb" width="140" height="79"></canvas>
                     <div class="captime" id="captime"></div>
-                    <div class="model-badge" id="modelBadge"></div>
+                    <div class="model-badge real" id="modelBadge">🧠 KeyJointNet</div>
                 </div>
             </div>
         </div>
-
         <script>
-            const vid = document.getElementById('vid');
-            const flash = document.getElementById('flash');
-            const overlay = document.getElementById('overlay');
-            const status = document.getElementById('status');
-            const timer = document.getElementById('timer');
-            const playBtn = document.getElementById('playBtn');
-            const resultBox = document.getElementById('resultBox');
-            const waiting = document.getElementById('waiting');
-            const result = document.getElementById('result');
-            const pred = document.getElementById('pred');
-            const probs = document.getElementById('probs');
-            const thumb = document.getElementById('thumb');
-            const captime = document.getElementById('captime');
-            const modelBadge = document.getElementById('modelBadge');
-
-            let playing = false;
-            let captured = false;
-
-            // Pre-computed prediction from ST-GCN model
+            const vid = document.getElementById('vid'), flash = document.getElementById('flash'), overlay = document.getElementById('overlay');
+            const status = document.getElementById('status'), timer = document.getElementById('timer'), playBtn = document.getElementById('playBtn');
+            const waiting = document.getElementById('waiting'), result = document.getElementById('result'), pred = document.getElementById('pred');
+            const probs = document.getElementById('probs'), thumb = document.getElementById('thumb'), captime = document.getElementById('captime');
+            let playing = false, captured = false;
             const modelPrediction = {pred_json};
             const groundTruth = {gt_json};
 
-            vid.addEventListener('timeupdate', () => {{
-                const t = vid.currentTime;
-                const m = Math.floor(t / 60);
-                const s = Math.floor(t % 60);
-                const ms = Math.floor((t % 1) * 1000);
-                timer.textContent = m + ':' + String(s).padStart(2,'0') + '.' + String(ms).padStart(3,'0');
-            }});
+            vid.addEventListener('timeupdate', () => {{ const t = vid.currentTime; timer.textContent = Math.floor(t/60) + ':' + String(Math.floor(t%60)).padStart(2,'0') + '.' + String(Math.floor((t%1)*1000)).padStart(3,'0'); }});
+            vid.addEventListener('play', () => {{ playing = true; status.textContent = '▶ PLAYING - SPACEBAR at release!'; status.className = 'status play'; playBtn.textContent = '⏸ PAUSE'; }});
+            vid.addEventListener('pause', () => {{ playing = false; if (!captured) {{ status.textContent = '⏸ Paused'; status.className = 'status wait'; }} playBtn.textContent = '▶ PLAY'; }});
 
-            vid.addEventListener('play', () => {{
-                playing = true;
-                status.textContent = '▶ PLAYING - SPACEBAR at release!';
-                status.className = 'status play';
-                playBtn.textContent = '⏸ PAUSE';
-            }});
-
-            vid.addEventListener('pause', () => {{
-                playing = false;
-                if (!captured) {{
-                    status.textContent = '⏸ Paused';
-                    status.className = 'status wait';
-                }}
-                playBtn.textContent = '▶ PLAY';
-            }});
-
-            vid.addEventListener('ended', () => {{
-                playing = false;
-                playBtn.textContent = '▶ PLAY';
-            }});
-
-            function toggle() {{
-                if (captured) return;
-                vid.paused ? vid.play() : vid.pause();
-            }}
-
-            function reset() {{
-                vid.pause();
-                vid.currentTime = 0;
-                playing = false;
-                captured = false;
-                status.textContent = 'Press PLAY → SPACEBAR at release';
-                status.className = 'status wait';
-                playBtn.textContent = '▶ PLAY';
-                resultBox.classList.remove('has-result');
-                waiting.style.display = 'block';
-                result.classList.remove('show');
-            }}
+            function toggle() {{ if (!captured) vid.paused ? vid.play() : vid.pause(); }}
+            function reset() {{ vid.pause(); vid.currentTime = 0; playing = false; captured = false; status.textContent = 'Press PLAY → SPACEBAR at release'; status.className = 'status wait'; playBtn.textContent = '▶ PLAY'; waiting.style.display = 'block'; result.classList.remove('show'); }}
 
             function capture() {{
                 if (captured || !playing) return;
                 captured = true;
-
-                // Flash effect
-                flash.classList.add('active');
-                setTimeout(() => flash.classList.remove('active'), 150);
-
-                // Overlay
-                overlay.classList.add('show');
-                setTimeout(() => overlay.classList.remove('show'), 400);
-
+                flash.classList.add('active'); setTimeout(() => flash.classList.remove('active'), 150);
+                overlay.classList.add('show'); setTimeout(() => overlay.classList.remove('show'), 400);
                 vid.pause();
-
-                // Draw thumbnail
-                const ctx = thumb.getContext('2d');
-                ctx.drawImage(vid, 0, 0, 140, 79);
-
-                // Capture time
+                thumb.getContext('2d').drawImage(vid, 0, 0, 140, 79);
                 const t = vid.currentTime;
-                const m = Math.floor(t / 60);
-                const s = Math.floor(t % 60);
-                const ms = Math.floor((t % 1) * 1000);
-                captime.textContent = 'Captured at ' + m + ':' + String(s).padStart(2,'0') + '.' + String(ms).padStart(3,'0');
-
-                status.textContent = '🔄 Running ST-GCN model...';
-                status.className = 'status done';
-
-                // Show prediction after brief delay (simulating inference)
+                captime.textContent = 'Captured at ' + Math.floor(t/60) + ':' + String(Math.floor(t%60)).padStart(2,'0') + '.' + String(Math.floor((t%1)*1000)).padStart(3,'0');
+                status.textContent = '🔄 Running KeyJointNet...'; status.className = 'status done';
                 setTimeout(showPrediction, 300);
             }}
 
             function showPrediction() {{
-                const makeP = modelPrediction.make_prob;
-                const missP = modelPrediction.miss_prob;
-                const conf = modelPrediction.confidence;
-                const prediction = modelPrediction.prediction;
-
+                const makeP = modelPrediction.make_prob, missP = modelPrediction.miss_prob, conf = modelPrediction.confidence, prediction = modelPrediction.prediction;
                 let label, cls;
-
-                if (prediction === 'NO MODEL') {{
-                    label = '⚠️ NO MODEL';
-                    cls = 'nobet';
-                }} else if (conf < 0.2) {{
-                    label = '⚪ NO BET';
-                    cls = 'nobet';
-                }} else if (prediction === 'MAKE') {{
-                    label = '🟢 MAKE';
-                    cls = 'make';
-                }} else {{
-                    label = '🔴 MISS';
-                    cls = 'miss';
-                }}
-
-                pred.textContent = label;
-                pred.className = 'prediction ' + cls;
-
-                let probsHtml = 'Make: ' + (makeP*100).toFixed(1) + '% | Miss: ' + (missP*100).toFixed(1) + '%<br>';
-                probsHtml += 'Confidence: ' + (conf*100).toFixed(0) + '%';
-
-                // Show ground truth if available
+                if (prediction === 'NO MODEL') {{ label = '⚠️ NO MODEL'; cls = 'nobet'; }}
+                else if (conf < 0.15) {{ label = '⚪ NO BET'; cls = 'nobet'; }}
+                else if (prediction === 'MAKE') {{ label = '🟢 MAKE'; cls = 'make'; }}
+                else {{ label = '🔴 MISS'; cls = 'miss'; }}
+                pred.textContent = label; pred.className = 'prediction ' + cls;
+                let html = 'Make: ' + (makeP*100).toFixed(1) + '% | Miss: ' + (missP*100).toFixed(1) + '%<br>Confidence: ' + (conf*100).toFixed(0) + '%';
                 if (groundTruth !== null) {{
-                    const gtLabel = groundTruth === 1 ? 'MAKE' : 'MISS';
-                    const correct = (prediction === gtLabel);
-                    probsHtml += '<br><small style="color:' + (correct ? '#10b981' : '#ef4444') + '">';
-                    probsHtml += (correct ? '✓' : '✗') + ' Ground truth: ' + gtLabel + '</small>';
+                    const gt = groundTruth === 1 ? 'MAKE' : 'MISS', correct = prediction === gt;
+                    html += '<br><small style="color:' + (correct ? '#10b981' : '#ef4444') + '">' + (correct ? '✓' : '✗') + ' Truth: ' + gt + '</small>';
                 }}
-
-                probs.innerHTML = probsHtml;
-
-                // Model badge
-                if (prediction === 'NO MODEL') {{
-                    modelBadge.textContent = '⚠️ Model not loaded';
-                    modelBadge.className = 'model-badge mock';
-                }} else {{
-                    modelBadge.textContent = '🧠 ST-GCN Prediction';
-                    modelBadge.className = 'model-badge real';
-                }}
-
-                waiting.style.display = 'none';
-                result.classList.add('show');
-                resultBox.classList.add('has-result');
-                status.textContent = '✓ Prediction complete!';
+                probs.innerHTML = html;
+                waiting.style.display = 'none'; result.classList.add('show'); status.textContent = '✓ Prediction complete!';
             }}
 
-            document.addEventListener('keydown', (e) => {{
-                if (e.code === 'Space') {{
-                    e.preventDefault();
-                    if (playing) capture();
-                    else if (!captured) toggle();
-                }}
-            }});
+            document.addEventListener('keydown', (e) => {{ if (e.code === 'Space') {{ e.preventDefault(); if (playing) capture(); else if (!captured) toggle(); }} }});
         </script>
     </body>
     </html>
     """
-
-    # Render component
     components.html(html_code, height=580, scrolling=False)
-
-    # Cleanup temp file
     os.unlink(video_path)
 
 else:
-    # No video uploaded yet
     st.markdown("""
     <div style="text-align: center; padding: 40px; background: rgba(255,255,255,0.02); border-radius: 12px; border: 2px dashed #4b5563;">
         <div style="font-size: 3rem; margin-bottom: 15px;">📹</div>
@@ -742,15 +398,20 @@ else:
     st.markdown("""
     ---
     ### 🎮 How It Works
-
     1. **Upload video** → Video appears on the left
     2. **Click PLAY** or press **SPACEBAR** to start
     3. **Watch like a live game** → Video plays in real-time  
     4. **Press SPACEBAR** at the exact moment of release
-    5. **See prediction instantly** from the trained ST-GCN model
+    5. **See prediction instantly** from the trained model
 
-    The prediction comes from the actual trained model analyzing the shooter's pose!
+    ---
+    ### 📊 Model: KeyJointNet (Calibrated)
+    | Metric | Value |
+    |--------|-------|
+    | CV Accuracy | 82.8% |
+    | Optimized Accuracy | 91.9% |
+    | AUC | 0.966 |
+    | Threshold | 64% |
     """)
 
-# Model status at bottom
-st.caption(f"Status: {model_status} | Device: {DEVICE}")
+st.caption(f"Status: {model_status} | Device: {DEVICE} | Threshold: {OPTIMAL_THRESHOLD}")
