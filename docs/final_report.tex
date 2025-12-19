@@ -20,6 +20,7 @@
 \usepackage{titlesec}
 \usepackage{enumitem}
 \usepackage{cite}
+\usepackage{tabularx}
 
 % Page geometry
 \geometry{
@@ -371,13 +372,6 @@ By stitching everything together, a simple web application predicts whether a ba
     \label{fig:appscreenshot}
 \end{figure}
 
-\begin{figure}
-    \centering
-    \includegraphics[width=1\linewidth]{figures/sam3_pipeline_composite.png}
-    \caption{SAM3D Body processing visualization showing the 4-frame temporal sequence (t-2 to t+1) used for prediction. Each row shows: original frame, skeleton detection, colorized mesh overlay, and isolated 3D body. The model analyzes motion patterns across this sequence to predict shot outcome.}
-    \label{fig:apppreview}
-\end{figure}
-
 \begin{figure}[t]
     \centering
     \fbox{\parbox{0.9\linewidth}{
@@ -440,7 +434,7 @@ Characteristics of the app model run:
     \centering
     \caption{Model comparison on merged dataset (174 samples). Key Joints with threshold optimization achieves best results.}
     \label{tab:main_results}
-    \begin{tabular}{lcccc}
+    \begin{tabularx}{\linewidth}{Xcccc}
         \toprule
         Model & Acc. & Std & AUC & Params \\
         \midrule
@@ -450,7 +444,7 @@ Characteristics of the app model run:
         Temporal CNN & 68.8\% & $\pm$5.4\% & 0.65 & 146K \\
         MLP Baseline & 68.6\% & $\pm$8.9\% & 0.61 & 679K \\
         \bottomrule
-    \end{tabular}
+    \end{tabularx}
 \end{table}
 
 \textbf{Key Observations:}
@@ -650,7 +644,7 @@ Our results show pose-based models (91.95\% accuracy with optimization) substant
     \centering
     \caption{Comparison to prior basketball analytics work.}
     \label{tab:comparison}
-    \begin{tabular}{lccc}
+    \begin{tabularx}{\linewidth}{Xccc}
         \toprule
         Work & Task & Acc. & Notes \\
         \midrule
@@ -658,7 +652,7 @@ Our results show pose-based models (91.95\% accuracy with optimization) substant
         Tran & Form analysis & 65\% & 2D only \\
         \textbf{Ours} & \textbf{Release pred.} & \textbf{91.95\%} & \textbf{3D + threshold opt.} \\
         \bottomrule
-    \end{tabular}
+    \end{tabularx}
 \end{table}
 
 The key distinction is temporal: we predict at release, before trajectory is available.
