@@ -6,12 +6,6 @@
 
 Predicting basketball free throw outcomes (make/miss) from 3D body pose at the moment of release using deep learning on skeletal graphs.
 
-<p align="center">
-  <img src="figures/sam3_pipeline_composite.png" alt="SAM3D Pipeline" width="100%">
-</p>
-
-<p align="center"><em>4-frame temporal sequence processed by SAM3D Body for pose extraction</em></p>
-
 ## Results
 
 | Model | Accuracy | AUC |
