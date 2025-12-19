@@ -6,6 +6,12 @@
 
 Predicting basketball free throw outcomes (make/miss) from 3D body pose at the moment of release using deep learning on skeletal graphs.
 
+<p align="center">
+  <img src="figures/sam3_pipeline_composite.png" alt="SAM3D Pipeline" width="100%">
+</p>
+
+<p align="center"><em>4-frame temporal sequence processed by SAM3D Body for pose extraction</em></p>
+
 ## Results
 
 | Model | Accuracy | AUC |
@@ -144,6 +150,21 @@ python src/build_features_mhr70.py \
 3. **Feature Engineering**: 4-frame sequence (t-2, t-1, t, t+1) with velocity/acceleration
 4. **Classification**: KeyJointNet with 15 key upper body joints
 5. **Calibration**: Platt scaling + threshold optimization (0.64)
+
+### Make vs Miss Pose Comparison
+
+<table>
+  <tr>
+    <td align="center"><strong>Successful Release (MAKE)</strong></td>
+    <td align="center"><strong>Failed Release (MISS)</strong></td>
+  </tr>
+  <tr>
+    <td><img src="figures/sample_make_release.jpg" alt="Make" width="400"></td>
+    <td><img src="figures/sample_miss_release.jpg" alt="Miss" width="400"></td>
+  </tr>
+</table>
+
+<p align="center"><em>The model learns subtle differences in elbow alignment, wrist position, and follow-through mechanics</em></p>
 
 ## Technical Details
 
