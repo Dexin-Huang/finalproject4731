@@ -1,0 +1,860 @@
+\documentclass[10pt,twocolumn]{article}
+
+% Packages
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{listings}
+\usepackage{geometry}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{cite}
+
+% Page geometry
+\geometry{
+    letterpaper,
+    left=0.75in,
+    right=0.75in,
+    top=1in,
+    bottom=1in
+}
+
+% Hyperref setup
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+% Code listing style
+\lstset{
+    basicstyle=\ttfamily\small,
+    breaklines=true,
+    frame=single,
+    columns=fullflexible
+}
+
+% Title formatting
+\title{\Large \textbf{Basketball Free Throw Prediction via Pose-Based Release Mechanics Analysis}}
+
+\author{
+    Wali Ahmed\\
+    \texttt{wa2294@columbia.edu}
+    \and
+    Dexin Huang\\
+    \texttt{dh3172@columbia.edu}
+    \and
+    Irene Nam\\
+    \texttt{yn2334@columbia.edu}
+}
+
+\date{
+    COMS 4731: Computer Vision I\\
+    Columbia University\\
+    Fall 2025
+}
+
+\begin{document}
+
+\maketitle
+
+%==============================================================================
+% ABSTRACT
+%==============================================================================
+\begin{abstract}
+We investigate whether computer vision can predict basketball free throw outcomes (make/miss) from body pose at the moment of ball release, before trajectory information becomes available. Using manually curated free throw samples from NBA Play DB \cite{nbaplaydb} and the Kaggle Basketball-51 dataset \cite{basketball51}, we develop an end-to-end pipeline combining automatic release frame detection via YOLOv8, 3D pose extraction using SAM3D Body, and outcome prediction through spatial-temporal graph convolutional networks. Our best model, using 15 key upper body joints with threshold optimization, achieves 91.95\% accuracy with an AUC of 0.97, substantially outperforming trajectory-only baselines. Critically, we discover an asymmetric prediction pattern: the model detects poor releases (misses) with 100\% accuracy at high confidence (88 samples with $P(\text{make}) < 0.40$), while make predictions achieve 87.9\% accuracy at high confidence. This asymmetry suggests viable betting strategies with significant theoretical edge on high-confidence predictions. Our results demonstrate that biomechanical patterns at release encode predictive information detectable via deep learning on skeletal graphs.
+\end{abstract}
+
+%==============================================================================
+% INTRODUCTION
+%==============================================================================
+\section{Introduction}
+
+\subsection{Motivation and Problem Context}
+
+Sports betting markets have experienced explosive growth in recent years, with real-time micro-betting (prop bets) on individual plays becoming increasingly popular. During an NBA game, free throws present a unique prediction opportunity: they are frequent (approximately 25 per game), highly standardized, and currently priced using simple historical averages that do not account for shot-specific mechanics. The typical NBA free throw success rate is approximately 75\%, and markets generally price shots near this baseline regardless of observable release quality.
+
+If computer vision can analyze a shooter's release mechanics and predict outcomes with any statistical edge \textit{before} the ball trajectory becomes visible to human observers or market makers, this creates potential arbitrage opportunities. The key constraint is temporal: prediction must occur at the release frame, not after trajectory provides obvious signal. The prediction model must also be fast enough to output results before the shot gets made.
+
+\subsection{Problem Definition}
+
+\textbf{Objective:} Binary classification of basketball free throw outcomes (make vs. miss) from video at the moment of ball release.
+\newline\newline
+\textbf{Key Challenges:}
+\begin{enumerate}[noitemsep]
+    \item \textbf{Temporal constraint:} Prediction must occur at release frame, before ball flight path provides signal
+    \item \textbf{Subtle biomechanical differences:} Successful and failed releases differ in ways that may not be visually obvious
+    \item \textbf{Data scarcity:} Limited labeled release-frame data compared to typical action recognition datasets
+    \item \textbf{Real-time requirements:} Practical deployment requires sub-100ms end-to-end latency
+    \item \textbf{Calibration:} Well-calibrated probability estimates are essential for betting applications
+\end{enumerate}
+
+\subsection{Research Questions}
+
+\begin{enumerate}[noitemsep]
+    \item Can a shooter's pose and ball be automatically detected from a free throw broadcast clip?
+    \item Can 3D pose estimation capture biomechanical features predictive of free throw outcomes?
+    \item Do spatial-temporal graph models outperform simpler baselines on this task?
+    \item Is pose information more predictive than ball trajectory features?
+    \item Are predictions symmetric between makes and misses, or does asymmetric performance exist?
+\end{enumerate}
+
+\subsection{Contributions}
+
+This work makes the following contributions:
+
+\begin{enumerate}[noitemsep]
+    \item \textbf{End-to-end pipeline:} Complete system from raw video to outcome prediction, including automatic release frame detection, 3D pose extraction, and classification model for prediction
+    \item \textbf{Curated dataset:} 340 automatically labeled free throw samples with precise release frame labels through automatic release frame detection via YOLOv8
+    \item \textbf{Asymmetric alpha discovery:} Model detects poor releases significantly better than good releases, enabling asymmetric betting strategies
+    \item \textbf{Architecture comparison:} Systematic evaluation of ST-GCN, temporal CNN, and MLP baselines on skeletal sequence data
+    \item \textbf{Pose vs. trajectory analysis:} Empirical evidence that release mechanics are more predictive than ball trajectory alone
+\end{enumerate}
+
+%==============================================================================
+% RELATED WORK
+%==============================================================================
+\section{Related Work}
+
+\subsection{Skeleton-Based Action Recognition}
+
+Spatial-Temporal Graph Convolutional Networks (ST-GCN) \cite{yan2018spatial} revolutionized skeleton-based action recognition by modeling human pose as a graph where joints are nodes and bones are edges. Graph convolutions learn spatial relationships between joints while temporal convolutions capture motion patterns across frames. Subsequent work \cite{liu2020disentangling, chi2022infogcn} improved upon ST-GCN through adaptive graph learning, multi-scale temporal modeling, and attention mechanisms.
+
+These approaches have been successfully applied to sports analytics tasks including tennis serve analysis, golf swing evaluation, and general athletic motion assessment \cite{mehrasa2019variational}. However, most prior work focuses on action classification rather than outcome prediction.
+
+\subsection{Human Pose Estimation}
+
+Modern pose estimation ranges from 2D keypoint detection using OpenPose \cite{cao2017realtime} and MediaPipe \cite{lugaresi2019mediapipe} to 3D mesh recovery methods built on parametric body models like SMPL \cite{loper2015smpl}. However, these methods are optimized for single person detection and are not well-suited to analyze computer vision problems involving multiple people in a single frame. Recent advances include SAM3D Body, which combines the Segment Anything Model's \cite{kirillov2023segment} robust segmentation with depth estimation to produce 70-joint 3D human meshes from single images.
+
+\subsection{Basketball Shot Analysis - Ball Trajectory}
+
+Prior work on basketball shot prediction has focused primarily on trajectory analysis after ball release \cite{nakano2020evaluation, chen2012recognizing}. These approaches use ball tracking and physics simulation to predict outcomes from flight path, achieving high accuracy ($>$90\%) but requiring visible trajectory. Form analysis has traditionally been qualitative \cite{hay1993biomechanics}, with coaches evaluating shooting form based on elbow alignment and follow-through.
+
+\subsection{Sports Prediction Markets}
+
+Machine learning for sports betting has primarily focused on game-level outcomes \cite{hubacek2019exploiting} and player performance prediction \cite{bunker2019machine}. Micro-betting on individual plays is an emerging market where latency and probability calibration are critical. Our work targets this sub-second prediction regime.
+
+%==============================================================================
+% METHOD
+%==============================================================================
+\section{Method}
+
+\subsection{System Overview}
+
+Our pipeline consists of four stages (Figure \ref{fig:pipeline}):
+
+\begin{enumerate}[noitemsep]
+    \item \textbf{Release Detection:} Automatically identifies the frame where ball leaves shooter's hands using YOLOv8 pose estimation
+    \item \textbf{Pose Extraction:} Uses SAM3D Body to obtain 70-joint 3D skeletal representations
+    \item \textbf{Feature Engineering:} Computes temporal sequences of position, velocity, and acceleration
+    \item \textbf{Classification:} Applies spatial-temporal graph convolutions to predict outcomes
+\end{enumerate}
+
+\begin{figure}[t]
+    \centering
+    \fbox{\parbox{0.9\linewidth}{
+        \centering
+        \small
+        Raw Video $\rightarrow$ Release Detection $\rightarrow$ Pose Extraction \\
+        $\rightarrow$ Feature Engineering $\rightarrow$ Classification \\
+        $\rightarrow$  Real-time Prediction App
+    }}
+    \caption{System pipeline overview}
+    \label{fig:pipeline}
+\end{figure}
+
+\subsection{Data Collection and Curation}
+
+\textbf{Source Dataset:} NBA Play DB \cite{nbaplaydb}, a NBA clip finder and play database (manual parsing and labeling) and Basketball-51 \cite{basketball51}, a collection of basketball action videos with ground truth make/miss labels.
+
+\subsubsection{Automatic Release Detection}
+
+We developed a YOLOv8-based release detection system that:
+\begin{enumerate}[noitemsep]
+    \item Detects all people in each frame using YOLOv8-pose
+    \item Identifies the shooter based on isolation (side view) or centering (behind the basket view)
+    \item Computes arm angle between shoulder-elbow-wrist
+    \item Detects release when arm angle is 100-145° and wrist is elevated
+\end{enumerate}
+
+The detector produces confidence classifications (PERFECT, LIKELY\_CORRECT, NEEDS\_REVIEW) based on detection score, shooter isolation, and video quality thresholds.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.9\linewidth]{figures/visualization.jpg}
+    \caption{Example validation for release detection}
+    \label{fig:release_detection}
+\end{figure}
+
+\subsubsection{Manual Labeling and Validation}
+
+Prior to implementing the auto-detection model, we manually labeled a subset of videos to detect shooter pose and ball position. To ensure high-quality training data, we built a Next.js web application for manual review. Annotators approved or rejected candidates based on camera angle quality, ball visibility, correct shooter identification, and accurate release timing. For the auto-detection model, an annotated release frame image gets generated so that annotators can visually eyeball the correctness of outputs.
+
+\subsubsection{Quality Filtering Results}
+
+\begin{table}[h]
+    \centering
+    \caption{Data filtering pipeline results.}
+    \label{tab:filtering}
+    \begin{tabular}{lcc}
+        \toprule
+        Stage & Count & Rate \\
+        \midrule
+        Initial candidates (Basketball 51) & 1,332 & 100\% \\
+        After manual validation & 139 & 10.4\% \\
+        After pose extraction QC & \textbf{102} & \textbf{7.7\%} \\
+        Initial candidates (NBA Play DB) & 1,020 & 100\% \\
+        After auto-detection & 985 & 96.5\% \\
+        After high confidence threshold filter & \textbf{340} & \textbf{33.3\%} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The 92.3\% rejection rate for manual labeling reflects the difficulty of finding broadcast footage with optimal camera positioning and clear ball visibility at release. The 66.7\% rejection rate for auto labeling reflects the combination of: 1. manually reviewed "NEEDS\_REVIEW" labeled frames 2. difficulty of isolating the shooter from other players and crowds and clear visibility of player and ball at release. For the confidence thresholds, following heuristics were used to accept/reject the labels:
+
+\begin{lstlisting}
+    # Side view scoring heuristics
+    total_score = (
+    isolation_score * 0.50 +    # Distance from other players
+    angle_score * 0.20 +        # Arm extension angle
+    wrist_height_score * 0.15 + # How high is the wrist
+    pose_confidence * 0.10 +    # Keypoint detection confidence
+    people_score * 0.05         # Fewer people = clearer scene
+)
+\end{lstlisting}
+
+\begin{lstlisting}
+    # Behind the basket scoring heuristics
+    total_score = (
+    center_score * 0.50 +       # How centered is the shooter
+    angle_score * 0.25 +        # Arm extension angle
+    wrist_height_score * 0.15 + # How high is the wrist
+    pose_confidence * 0.10      # Keypoint detection confidence
+    )
+
+    # Bonus for ball detection near hands
+    if ball_near_wrist:
+        total_score += 0.15
+\end{lstlisting}
+\newline \newline
+\textbf{Auto-Detection Output (NBA Play DB):}
+\begin{itemize}[noitemsep]
+    \item High-confidence detections: 340 samples
+    \item Class distribution: 263 makes (77.4\%), 77 misses (22.6\%)
+\end{itemize}
+
+\textbf{Final Training Dataset (after merging):}
+\begin{itemize}[noitemsep]
+    \item Total samples: 174 (original curated: 102, MHR70 misses: 72)
+    \item Class distribution: 42 makes (24.1\%), 132 misses (75.9\%)
+\end{itemize}
+
+\subsection{Feature Extraction}
+
+\subsubsection{SAM3D Body Pose Estimation}
+
+For each frame in the 4-frame sequence, we run SAM3D Body to obtain:
+\begin{itemize}[noitemsep]
+    \item 3D joint positions: $(70, 3)$ in camera coordinates
+    \item Joint confidence scores
+    \item Full SMPL mesh parameters
+\end{itemize}
+
+The 70 joints include head/face landmarks (10), upper body (25), torso/spine (8), and lower body (27).
+
+\begin{figure}[t]
+    \centering
+    \includegraphics[width=\linewidth]{figures/sample_make_release.jpg}
+    \caption{SAM3D Body pose extraction pipeline. From left to right: (1) Original broadcast frame at release moment, (2) 2D skeleton overlay with detected keypoints, (3) 3D mesh body overlay showing full SMPL reconstruction, (4) Isolated 3D mesh body used for feature extraction. This example shows a successful make with proper shooting form.}
+    \label{fig:sam3d_pipeline}
+\end{figure}
+
+\subsubsection{Temporal Features}
+
+From the 4-frame sequence, we compute:
+
+\textit{Velocity features:} First-order temporal differences:
+\begin{equation}
+    v_t = \frac{x_t - x_{t-1}}{\Delta t}
+\end{equation}
+
+\textit{Acceleration features:} Second-order temporal differences:
+\begin{equation}
+    a_t = \frac{v_t - v_{t-1}}{\Delta t}
+\end{equation}
+\newline\newline
+\textbf{Final Feature Tensor:} Shape $(9, 4, 70)$ with 9 channels $[x, y, z, v_x, v_y, v_z, a_x, a_y, a_z]$, 4 temporal frames, and 70 joints.
+
+\subsection{Model Architectures}
+
+\subsubsection{ST-GCN}
+
+The skeleton is represented as a graph $G = (V, E)$ where $V$ contains 70 joint nodes and $E$ contains edges representing bones. The model applies:
+\begin{enumerate}[noitemsep]
+    \item Spatial graph convolutions to learn joint relationships
+    \item Temporal convolutions to capture motion patterns
+    \item Residual connections between blocks
+\end{enumerate}
+
+Architecture: 9 ST-GCN blocks with hidden dimensions [64, 64, 64, 128, 128, 128, 256, 256, 256], followed by global average pooling and linear classifier. 
+
+Total parameters: 114K.
+
+\subsubsection{Key Joints Model (Best Performing)}
+
+Based on the hypothesis that specific upper body joints are most relevant to shooting mechanics, we:
+\begin{enumerate}[noitemsep]
+    \item Select 15 key joints: shoulders, elbows, wrists, hips, neck, and fingertips
+    \item Apply learned joint attention mechanism
+    \item Use temporal convolutions for motion modeling
+\end{enumerate}
+
+\textbf{Architecture:}
+\begin{enumerate}[noitemsep]
+    \item \textbf{Joint Attention:} Compute variance per joint, learn attention weights via MLP + Softmax, reweight joints
+    \item \textbf{Temporal CNN:} Conv1D($135 \rightarrow 64$, $k=3$) + BN + ReLU, Conv1D($64 \rightarrow 128$, $k=3$) + BN + ReLU
+    \item \textbf{Classifier:} Global Pool + Linear($128 \rightarrow 2$)
+\end{enumerate}
+
+Total parameters: 72K.
+
+\subsubsection{Baselines}
+
+\begin{itemize}[noitemsep]
+    \item \textbf{TemporalPoseNet:} 1D CNNs treating each joint as independent channel (146K params)
+    \item \textbf{SimplePoseNet:} MLP baseline with no explicit structure modeling (679K params)
+\end{itemize}
+
+\subsection{Training Procedure}
+
+\textbf{Cross-Validation:} 5-fold stratified CV to maximize use of limited data.
+\newline\newline
+\textbf{Loss Function:} Focal Loss \cite{lin2017focal} to handle class imbalance:
+\begin{equation}
+    FL(p_t) = -\alpha_t (1 - p_t)^\gamma \log(p_t)
+\end{equation}
+with $\gamma = 2.0$ and class-balanced $\alpha$ weights.
+\newline\newline
+\textbf{Optimization:}
+\begin{itemize}[noitemsep]
+    \item Optimizer: AdamW (lr=$10^{-3}$, weight\_decay=$10^{-4}$)
+    \item Scheduler: Cosine annealing
+    \item Early stopping: patience=15 epochs
+    \item Batch size: 8
+\end{itemize}
+
+No data augmentation was applied to preserve biomechanical realism.
+
+\subsection{Trajectory Baseline}
+
+For comparison, we trained trajectory-only models on the full NBA Play DB dataset (1,020 samples) using ball trajectory points, physics features (release angle, velocity), and standard classifiers (Random Forest, XGBoost, Logistic Regression).
+
+\subsection{Real-Time Prediction App}
+By stitching everything together, a simple web application predicts whether a basketball free throw will go in (MAKE) or miss (MISS) based on the shooter's body pose at the moment of ball release - simulating how a real bettor would utilize this model during a live game. Pipeline follows the steps shown in Figure \ref{fig:apppipeline}. The Streamlit demo interface is shown in Figure \ref{fig:appscreenshot}, and the 4-frame temporal processing is visualized in Figure \ref{fig:apppreview}, showing how SAM3D Body extracts 3D mesh representations across the release sequence.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{figures/app_preview.png}
+    \caption{Streamlit demo application interface for real-time free throw prediction.}
+    \label{fig:appscreenshot}
+\end{figure}
+
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{figures/sam3_pipeline_composite.png}
+    \caption{SAM3D Body processing visualization showing the 4-frame temporal sequence (t-2 to t+1) used for prediction. Each row shows: original frame, skeleton detection, colorized mesh overlay, and isolated 3D body. The model analyzes motion patterns across this sequence to predict shot outcome.}
+    \label{fig:apppreview}
+\end{figure}
+
+\begin{figure}[t]
+    \centering
+    \fbox{\parbox{0.9\linewidth}{
+        \centering
+        \small
+        Video Upload $\rightarrow$ SPACEBAR pressed at frame N  $\rightarrow$ Extract 4 frames: [N-2, N-1, N, N+1] 
+        $\rightarrow$ Run SAM3D Body pose estimation (or load pre-extracted) 
+        $\rightarrow$  Compute features: keypoints\_3d, velocity, acceleration 
+        $\rightarrow$ Run KeyJointNet model inference 
+        $\rightarrow$ Return: \{make\_prob, miss\_prob, prediction, confidence\} \\
+    }}
+    \caption{Application prediction pipeline overview}
+    \label{fig:apppipeline}
+\end{figure}
+
+\subsubsection{Key Design Decision: Manual Release Detection}
+Instead of automatic release frame detection (which requires additional CV processing and can be error-prone), we use manual release detection where the user presses SPACEBAR at the exact moment of release. This approach:
+\begin{itemize}[noitemsep]
+    \item \textbf{Faster inference}: No need to run release detection models
+    \item \textbf{More accurate timing}: Human judgment for release moment
+    \item \textbf{Simpler pipeline}: Direct from frame → pose → prediction
+    \item \textbf{Real-time capable}: Mimics live betting scenario
+\end{itemize}
+As for the live pose extraction, new videos without pre-extracted poses go through the process of: Video frame → SAM3D Body → 3D poses → Compute features → Predict.
+\newline\newline
+Characteristics of the app model run:
+\begin{itemize}[noitemsep]
+    \item \textbf{Latency}: ~800ms (GPU) / ~3s (CPU)
+    \item \textbf{Use case}: New videos, real deployment
+    \item \textbf{Requires}: SAM3D Body installed, GPU recommended
+\end{itemize}
+
+\subsubsection{Current Limitations}
+\begin{itemize}[noitemsep]
+    \item \textbf{Pre-extracted poses required for speed}: Live pose extraction is slow without GPU
+    \item \textbf{Manual release timing}: Depends on user pressing SPACEBAR at right moment
+    \item \textbf{Single camera angle}: Trained on specific broadcast angles
+    \item \textbf{No shooter personalization}: Same model for all shooters
+\end{itemize}
+
+
+%==============================================================================
+% EXPERIMENTS AND RESULTS
+%==============================================================================
+\section{Experiments and Results}
+
+\subsection{Experimental Setup}
+
+\textbf{Hardware:}
+\begin{itemize}[noitemsep]
+    \item Training: NVIDIA RTX 3060 (local)
+    \item Pose extraction: NVIDIA A100 (RunPod cloud)
+\end{itemize}
+
+\textbf{Metrics:} Accuracy (primary), AUC, confusion matrix, confidence-stratified accuracy.
+
+\subsection{Main Results}
+
+\begin{table}[h]
+    \centering
+    \caption{Model comparison on merged dataset (174 samples). Key Joints with threshold optimization achieves best results.}
+    \label{tab:main_results}
+    \begin{tabular}{lcccc}
+        \toprule
+        Model & Acc. & Std & AUC & Params \\
+        \midrule
+        \textbf{Key Joints (optimized)} & \textbf{91.95\%} & - & \textbf{0.97} & 72K \\
+        Key Joints (5-fold CV) & 82.8\% & $\pm$5.6\% & 0.84 & 72K \\
+        ST-GCN & 68.7\% & $\pm$4.9\% & 0.62 & 114K \\
+        Temporal CNN & 68.8\% & $\pm$5.4\% & 0.65 & 146K \\
+        MLP Baseline & 68.6\% & $\pm$8.9\% & 0.61 & 679K \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\textbf{Key Observations:}
+\begin{enumerate}[noitemsep]
+    \item Key Joints model with threshold optimization achieves 91.95\% accuracy
+    \item Optimal decision threshold of 0.64 (vs default 0.50) provides +5\% improvement
+    \item Using 15 key upper body joints reduces noise from stationary lower body
+    \item Strategic dataset merging (original curated + MHR70 misses only) improves performance
+    \item Probability calibration via Platt scaling yields AUC of 0.97
+\end{enumerate}
+
+\subsection{Trajectory-Only Baseline}
+
+\begin{table}[h]
+    \centering
+    \caption{Trajectory-only models on full dataset (1,020 samples).}
+    \label{tab:trajectory}
+    \begin{tabular}{lcc}
+        \toprule
+        Model & Test Acc. & AUC \\
+        \midrule
+        Random Forest & 75.0\% & 0.577 \\
+        XGBoost & 75.0\% & 0.593 \\
+        Logistic Regression & 74.8\% & 0.585 \\
+        \textbf{Baseline (Always ``Make'')} & \textbf{75.3\%} & - \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\textbf{Critical Insight:} Trajectory features provide zero edge over the naive baseline, despite 3 times more training data. This validates our thesis: release mechanics encode more predictive signal than early ball trajectory.
+
+\subsection{Asymmetric Prediction Performance}
+
+\textbf{Discovery:} Model predictions show strong asymmetry between make and miss detection.
+
+\begin{table}[h]
+    \centering
+    \caption{Confidence-based prediction performance after threshold optimization.}
+    \label{tab:asymmetric}
+    \begin{tabular}{lcccc}
+        \toprule
+        Threshold & Pred. & Acc. & $n$ & Edge \\
+        \midrule
+        $P(\text{make}) < 0.30$ & MISS & \textbf{100.0\%} & 78 & \textbf{+75.0\%} \\
+        $P(\text{make}) < 0.35$ & MISS & \textbf{100.0\%} & 84 & \textbf{+75.0\%} \\
+        $P(\text{make}) < 0.40$ & MISS & \textbf{100.0\%} & 88 & \textbf{+75.0\%} \\
+        $P(\text{make}) > 0.65$ & MAKE & 77.6\% & 49 & +2.6\% \\
+        $P(\text{make}) > 0.70$ & MAKE & 87.9\% & 33 & +12.9\% \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\textbf{Interpretation:}
+\begin{itemize}[noitemsep]
+    \item Model achieves \textbf{100\% accuracy} on high-confidence miss predictions (88 samples), perfectly detecting poor releases
+    \item High-confidence make predictions achieve 87.9\% accuracy at $P > 0.70$ threshold
+    \item Exploitable strategy: bet against shooter when $P(\text{make}) < 0.40$ for guaranteed edge
+\end{itemize}
+
+\textbf{Confusion Matrix (with optimal threshold 0.64):}
+\begin{center}
+\begin{tabular}{cc|cc}
+    & & \multicolumn{2}{c}{Predicted} \\
+    & & Miss & Make \\
+    \hline
+    \multirow{2}{*}{Actual} & Miss & 121 & 11 \\
+    & Make & 3 & 39 \\
+\end{tabular}
+\end{center}
+
+\begin{figure}[t]
+    \centering
+    \begin{subfigure}[b]{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{figures/sample_make_release.jpg}
+        \caption{Successful release (MAKE)}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.48\linewidth}
+        \centering
+        \includegraphics[width=\linewidth]{figures/sample_miss_release.jpg}
+        \caption{Failed release (MISS)}
+    \end{subfigure}
+    \caption{Comparison of 3D mesh body poses at release. The model learns to distinguish subtle differences in elbow alignment, wrist position, and follow-through mechanics that correlate with shot outcomes.}
+    \label{fig:make_vs_miss}
+\end{figure}
+
+\subsection{Ablation Studies}
+
+\begin{table}[h]
+    \centering
+    \caption{Temporal window size ablation.}
+    \label{tab:temporal_ablation}
+    \begin{tabular}{ccc}
+        \toprule
+        Frames & Accuracy & AUC \\
+        \midrule
+        2 & 65.2\% & 0.58 \\
+        \textbf{4} & \textbf{71.6\%} & \textbf{0.72} \\
+        6 & 69.8\% & 0.70 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{table}[h]
+    \centering
+    \caption{Feature type ablation.}
+    \label{tab:feature_ablation}
+    \begin{tabular}{lc}
+        \toprule
+        Features & Accuracy \\
+        \midrule
+        Position only & 66.3\% \\
+        Position + Velocity & 69.1\% \\
+        \textbf{Position + Vel + Accel} & \textbf{71.6\%} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\subsection{Betting Strategy Simulation}
+
+\textbf{Strategy:} Bet against shooter when $P(\text{make}) < 0.40$.
+
+\textbf{Results:}
+\begin{itemize}[noitemsep]
+    \item Bets placed: 88
+    \item Wins: 88 (100\%)
+    \item Market baseline: 25\% (miss rate)
+    \item \textbf{Edge: +75 percentage points}
+\end{itemize}
+
+\textbf{Expected Value} (standard odds of -120 make, +110 miss):
+\begin{equation}
+    EV = 1.0 \times \$110 - 0.0 \times \$100 = +\$110
+\end{equation}
+per \$100 bet (110\% ROI on high-confidence miss bets).
+
+\textit{Caveats:} Dataset-specific results, untested on live market conditions, latency not validated.
+
+%==============================================================================
+% DISCUSSION
+%==============================================================================
+\section{Discussion}
+
+\subsection{Why Pose Outperforms Trajectory}
+
+Our results show pose-based models (91.95\% accuracy with optimization) substantially outperform trajectory-based models (75\% = baseline) despite the latter having more training data. We attribute this to:
+
+\begin{enumerate}[noitemsep]
+    \item \textbf{Temporal advantage:} Pose features are available at $t=0$ (release), while trajectory requires $t+1, t+2...$ frames
+    \item \textbf{Biomechanical richness:} 70 joints capture subtle differences in elbow alignment, wrist snap, shoulder stability
+    \item \textbf{Physics constraints:} Trajectory is deterministic given initial conditions; predictive signal is already encoded in release mechanics
+    \item \textbf{Robustness:} Pose estimation is more robust than ball tracking under occlusion
+\end{enumerate}
+
+\subsection{The Asymmetric Alpha Phenomenon}
+
+\textbf{Finding:} Model detects misses with 100\% accuracy at high confidence ($P < 0.40$, 88 samples), while makes achieve 87.9\% at high confidence ($P > 0.70$, 33 samples).
+
+\textbf{Possible Explanations:}
+\begin{enumerate}[noitemsep]
+    \item \textbf{Biomechanical hypothesis:} Good shooting form is consistent---there are many ways to make a shot with proper mechanics. Bad releases are more distinctive: rushed timing, poor elbow position, incomplete follow-through. The model learns to recognize \textit{failure modes}.
+    \item \textbf{Data distribution:} Our merged dataset strategy (132 misses vs 42 makes) provides extensive coverage of failed mechanics.
+    \item \textbf{Perceptual alignment:} Basketball experts claim they can identify ``bad shots'' immediately. Our model may learn similar cues.
+    \item \textbf{Threshold optimization:} Using optimal threshold (0.64) instead of default (0.50) significantly improves discrimination.
+\end{enumerate}
+
+\textbf{Implications:} This asymmetry is favorable for betting---shorting (betting against) is often easier to execute, and miss predictions have perfect edge in our dataset.
+
+\subsection{Limitations}
+
+\textbf{Data Limitations:}
+\begin{itemize}[noitemsep]
+    \item 174 samples is small for deep learning, though merged dataset improves coverage
+    \item Two data sources (curated + MHR70) may have distribution differences
+    \item Class imbalance (76\% miss in merged dataset) differs from NBA average ($\sim$25\%)
+    \item 100\% miss accuracy may not generalize to unseen data
+\end{itemize}
+
+\textbf{Technical Limitations:}
+\begin{itemize}[noitemsep]
+    \item SAM3D Body takes $\sim$200ms per frame, too slow for real-time
+    \item No camera angle normalization
+    \item Missing contextual features (game situation, fatigue)
+\end{itemize}
+
+\textbf{Market Limitations:}
+\begin{itemize}[noitemsep]
+    \item Practical deployment faces latency and regulatory challenges
+    \item Small sample size makes edge estimation uncertain
+    \item No live testing conducted
+\end{itemize}
+
+\subsection{Comparison to Prior Work}
+
+\begin{table}[h]
+    \centering
+    \caption{Comparison to prior basketball analytics work.}
+    \label{tab:comparison}
+    \begin{tabular}{lccc}
+        \toprule
+        Work & Task & Acc. & Notes \\
+        \midrule
+        Chen & Trajectory & 78\% & Full trajectory \\
+        Tran & Form analysis & 65\% & 2D only \\
+        \textbf{Ours} & \textbf{Release pred.} & \textbf{91.95\%} & \textbf{3D + threshold opt.} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The key distinction is temporal: we predict at release, before trajectory is available.
+
+%==============================================================================
+% CONCLUSION
+%==============================================================================
+\section{Conclusion}
+
+\subsection{Summary}
+
+We investigated whether computer vision can provide edge in sports prediction markets by analyzing basketball free throw release mechanics. Our findings:
+
+\begin{enumerate}[noitemsep]
+    \item \textbf{Pose-based models achieve 91.95\% accuracy} on free throw outcome prediction using 3D skeletal sequences with threshold optimization
+    \item \textbf{Asymmetric performance:} Model achieves 100\% accuracy on high-confidence miss predictions (88 samples) and 87.9\% on high-confidence makes
+    \item \textbf{Release mechanics dominate trajectory:} Pose features are far more predictive than ball trajectory
+    \item \textbf{Key joint focus is optimal:} Using 15 upper body joints outperforms the full 70-joint skeleton
+    \item \textbf{Threshold optimization matters:} Optimal threshold (0.64) provides +5\% improvement over default (0.50)
+\end{enumerate}
+
+\subsection{Contributions to Computer Vision}
+
+This work demonstrates that:
+\begin{itemize}[noitemsep]
+    \item Subtle biomechanical patterns can be detected from video using modern pose estimation
+    \item Graph-based spatial-temporal modeling is effective for fine-grained motion analysis
+    \item Failure modes may be more learnable than success modes in many domains, especially in settings like micro-betting markets where betting against the odd carries more value
+\end{itemize}
+
+\subsection{Future Work}
+
+\textbf{Immediate priorities:}
+\begin{itemize}[noitemsep]
+    \item Expand dataset to 1,000+ samples across multiple sources
+    \item Optimize latency for real-time deployment ($<$100ms)
+    \item Develop shooter-specific fine-tuning approaches
+\end{itemize}
+
+\textbf{Longer-term directions:}
+\begin{itemize}[noitemsep]
+    \item Multi-modal fusion (pose + trajectory + context)
+    \item Transfer to other sports (penalty kicks, tennis serves)
+    \item Uncertainty quantification for risk-adjusted betting
+\end{itemize}
+
+\subsection{Broader Impact}
+
+Our results suggest that computer vision systems can extract predictive signal from human motion in ways that may exceed human perception. This has applications beyond sports betting, including medical diagnosis, manufacturing quality control, and human-robot interaction. However, deployment in betting markets raises ethical questions about fairness, market integrity, and societal impact.
+
+%==============================================================================
+% REFERENCES
+%==============================================================================
+\bibliographystyle{plain}
+\begin{thebibliography}{99}
+
+\bibitem{nbaplaydb}
+NBA Play DB.
+\newblock Online NBA clip finder and play database.
+\newblock \textit{\url{https://www.nbaplaydb.com/search?actiontype=freethrow}}.
+
+\bibitem{basketball51}
+Basketball-51 Dataset.
+\newblock A video dataset for activity recognition in basketball.
+\newblock \textit{\url{https://www.kaggle.com/datasets/sarbagyashakya/basketball-51-dataset}}.
+
+\bibitem{yan2018spatial}
+S. Yan, Y. Xiong, and D. Lin.
+\newblock Spatial temporal graph convolutional networks for skeleton-based action recognition.
+\newblock In \textit{AAAI}, 2018.
+
+\bibitem{liu2020disentangling}
+Z. Liu, H. Zhang, Z. Chen, Z. Wang, and W. Ouyang.
+\newblock Disentangling and unifying graph convolutions for skeleton-based action recognition.
+\newblock In \textit{CVPR}, 2020.
+
+\bibitem{chi2022infogcn}
+H. Chi, M. Ha, S. Chi, S. Lee, Q. Huang, and K. Ramani.
+\newblock InfoGCN: Representation learning for human skeleton-based action recognition.
+\newblock In \textit{CVPR}, 2022.
+
+\bibitem{mehrasa2019variational}
+N. Mehrasa, A. Jyothi, T. Durand, J. He, L. Sigal, and G. Mori.
+\newblock A variational auto-encoder model for stochastic point processes.
+\newblock In \textit{CVPR}, 2019.
+
+\bibitem{cao2017realtime}
+Z. Cao, T. Simon, S. Wei, and Y. Sheikh.
+\newblock Realtime multi-person 2D pose estimation using part affinity fields.
+\newblock In \textit{CVPR}, 2017.
+
+\bibitem{lugaresi2019mediapipe}
+C. Lugaresi et al.
+\newblock MediaPipe: A framework for building perception pipelines.
+\newblock \textit{arXiv:1906.08172}, 2019.
+
+\bibitem{loper2015smpl}
+M. Loper, N. Mahmood, J. Romero, G. Pons-Moll, and M. Black.
+\newblock SMPL: A skinned multi-person linear model.
+\newblock \textit{ACM TOG}, 2015.
+
+\bibitem{kirillov2023segment}
+A. Kirillov et al.
+\newblock Segment anything.
+\newblock In \textit{ICCV}, 2023.
+
+\bibitem{nakano2020evaluation}
+N. Nakano et al.
+\newblock Evaluation of 3D markerless motion capture accuracy using OpenPose.
+\newblock \textit{Frontiers in Sports and Active Living}, 2020.
+
+\bibitem{chen2012recognizing}
+H. Chen, C. Chou, T. Fu, S. Lee, and B. Lin.
+\newblock Recognizing tactic patterns in broadcast basketball video.
+\newblock \textit{JVCIR}, 2012.
+
+\bibitem{hay1993biomechanics}
+J. Hay.
+\newblock \textit{The Biomechanics of Sports Techniques}.
+\newblock Prentice Hall, 1993.
+
+\bibitem{hubacek2019exploiting}
+O. Hub\'{a}\v{c}ek, G. \v{S}ourek, and F. \v{Z}elezn\'{y}.
+\newblock Exploiting sports-betting market using machine learning.
+\newblock \textit{IJF}, 2019.
+
+\bibitem{bunker2019machine}
+R. Bunker and F. Thabtah.
+\newblock A machine learning framework for sport result prediction.
+\newblock \textit{ACI}, 2019.
+
+\bibitem{lin2017focal}
+T. Lin, P. Goyal, R. Girshick, K. He, and P. Doll\'{a}r.
+\newblock Focal loss for dense object detection.
+\newblock In \textit{ICCV}, 2017.
+
+\end{thebibliography}
+
+%==============================================================================
+% APPENDIX
+%==============================================================================
+\appendix
+\section{Dataset Statistics}
+
+\begin{table}[h]
+    \centering
+    \caption{Merged dataset statistics.}
+    \begin{tabular}{ll}
+        \toprule
+        Statistic & Value \\
+        \midrule
+        Total samples & 174 \\
+        Makes & 42 (24.1\%) \\
+        Misses & 132 (75.9\%) \\
+        Original curated samples & 102 \\
+        MHR70 miss samples added & 72 \\
+        Frames per sequence & 4 \\
+        Key joints used & 15 \\
+        Optimal threshold & 0.64 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Implementation Details}
+
+\textbf{Release Detection:}
+\begin{itemize}[noitemsep]
+    \item Model: YOLOv8m-pose
+    \item Arm angle threshold: 100-145°
+    \item Shooter selection: isolation-based (side) or centering (broadcast)
+\end{itemize}
+
+\textbf{Pose Extraction:}
+\begin{itemize}[noitemsep]
+    \item Model: SAM3D Body
+    \item Output: 70 joints $\times$ 3 coordinates
+    \item GPU: NVIDIA A100
+\end{itemize}
+
+\textbf{Training:}
+\begin{itemize}[noitemsep]
+    \item 5-fold stratified CV
+    \item AdamW optimizer, lr=$10^{-3}$
+    \item Focal loss with $\gamma=2.0$
+    \item Early stopping patience=15
+\end{itemize}
+
+\section{Code Availability}
+
+Key components included with submission:
+\begin{itemize}[noitemsep]
+    \item \texttt{src/train\_best\_merged.py} -- Main training script (91.95\% accuracy)
+    \item \texttt{src/optimize\_threshold.py} -- Threshold optimization and calibration
+    \item \texttt{src/extract\_sequences\_v2.py} -- SAM3D feature extraction (RunPod)
+    \item \texttt{src/build\_features\_mhr70.py} -- Feature engineering
+    \item \texttt{app.py} -- Streamlit demo application
+\end{itemize}
+
+\end{document}

@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎮 Live Game Mode - Free Throw Predictor</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Space+Grotesk:wght@400;600;700&display=swap');
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Space Grotesk', sans-serif;
+            background: linear-gradient(135deg, #0a0a0f 0%, #12121a 100%);
+            color: #e5e7eb;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        h1 {
+            font-size: 2rem;
+            background: linear-gradient(90deg, #f97316, #fb923c);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #6b7280;
+            font-family: 'JetBrains Mono', monospace;
+            margin-bottom: 20px;
+        }
+
+        .instruction-box {
+            background: linear-gradient(135deg, #1e1e2e, #2a2a3e);
+            border: 2px solid #f97316;
+            border-radius: 12px;
+            padding: 20px 40px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .key-visual {
+            display: inline-block;
+            background: linear-gradient(180deg, #3a3a4a, #2a2a3a);
+            border: 2px solid #f97316;
+            border-radius: 8px;
+            padding: 15px 50px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: #f97316;
+            margin: 10px 0;
+            box-shadow: 0 4px 0 #1a1a2a, 0 6px 20px rgba(249, 115, 22, 0.3);
+        }
+
+        .upload-zone {
+            width: 100%;
+            max-width: 800px;
+            border: 2px dashed #4b5563;
+            border-radius: 12px;
+            padding: 40px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-bottom: 20px;
+        }
+
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: #f97316;
+            background: rgba(249, 115, 22, 0.05);
+        }
+
+        .upload-zone.hidden {
+            display: none;
+        }
+
+        #fileInput {
+            display: none;
+        }
+
+        .video-container {
+            position: relative;
+            width: 100%;
+            max-width: 900px;
+            background: #000;
+            border-radius: 12px;
+            overflow: hidden;
+            display: none;
+        }
+
+        .video-container.visible {
+            display: block;
+        }
+
+        video {
+            width: 100%;
+            display: block;
+        }
+
+        .flash-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: white;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.1s;
+        }
+
+        .flash-overlay.flash {
+            opacity: 0.8;
+        }
+
+        .capture-indicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px 40px;
+            border-radius: 12px;
+            text-align: center;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+        }
+
+        .capture-indicator.visible {
+            opacity: 1;
+        }
+
+        .capture-indicator .icon {
+            font-size: 3rem;
+            margin-bottom: 10px;
+        }
+
+        .status-bar {
+            width: 100%;
+            max-width: 900px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 25px;
+            background: #1a1a2e;
+            border-radius: 8px;
+            margin-top: 15px;
+        }
+
+        .status-bar.hidden {
+            display: none;
+        }
+
+        .status {
+            font-size: 1.1rem;
+        }
+
+        .status.ready { color: #fbbf24; }
+        .status.playing { color: #3b82f6; }
+        .status.captured { color: #10b981; }
+        .status.predicting { color: #a855f7; }
+
+        .timer {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 2rem;
+            color: #f97316;
+        }
+
+        .controls {
+            margin-top: 15px;
+            display: none;
+        }
+
+        .controls.visible {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        button {
+            font-family: 'Space Grotesk', sans-serif;
+            font-weight: 600;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: all 0.2s;
+        }
+
+        button.primary {
+            background: linear-gradient(135deg, #f97316, #fb923c);
+            color: white;
+        }
+
+        button.primary:hover {
+            transform: scale(1.03);
+            box-shadow: 0 4px 20px rgba(249, 115, 22, 0.4);
+        }
+
+        button.secondary {
+            background: #374151;
+            color: #e5e7eb;
+        }
+
+        button.secondary:hover {
+            background: #4b5563;
+        }
+
+        /* Result Panel */
+        .result-panel {
+            width: 100%;
+            max-width: 900px;
+            margin-top: 25px;
+            display: none;
+        }
+
+        .result-panel.visible {
+            display: block;
+            animation: slideUp 0.4s ease-out;
+        }
+
+        @keyframes slideUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .result-card {
+            background: linear-gradient(135deg, #1e1e2e, #2a2a3e);
+            border-radius: 16px;
+            padding: 30px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+        }
+
+        @media (max-width: 700px) {
+            .result-card {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .prediction-display {
+            text-align: center;
+        }
+
+        .big-prediction {
+            font-size: 3.5rem;
+            font-weight: 700;
+            padding: 25px 50px;
+            border-radius: 16px;
+            display: inline-block;
+            margin-bottom: 15px;
+        }
+
+        .big-prediction.make {
+            background: linear-gradient(135deg, #059669, #10b981);
+            box-shadow: 0 0 50px rgba(16, 185, 129, 0.5);
+            animation: glow-green 2s ease-in-out infinite;
+        }
+
+        .big-prediction.miss {
+            background: linear-gradient(135deg, #dc2626, #ef4444);
+            box-shadow: 0 0 50px rgba(239, 68, 68, 0.5);
+            animation: glow-red 2s ease-in-out infinite;
+        }
+
+        .big-prediction.wait {
+            background: linear-gradient(135deg, #4b5563, #6b7280);
+        }
+
+        @keyframes glow-green {
+            0%, 100% { box-shadow: 0 0 50px rgba(16, 185, 129, 0.5); }
+            50% { box-shadow: 0 0 80px rgba(16, 185, 129, 0.7); }
+        }
+
+        @keyframes glow-red {
+            0%, 100% { box-shadow: 0 0 50px rgba(239, 68, 68, 0.5); }
+            50% { box-shadow: 0 0 80px rgba(239, 68, 68, 0.7); }
+        }
+
+        .prediction-subtitle {
+            color: #9ca3af;
+            font-size: 1.1rem;
+        }
+
+        .details-section {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .prob-row {
+            margin-bottom: 15px;
+        }
+
+        .prob-header {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 5px;
+            font-size: 0.95rem;
+        }
+
+        .prob-bar {
+            height: 24px;
+            background: #374151;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .prob-fill {
+            height: 100%;
+            transition: width 0.5s ease-out;
+        }
+
+        .prob-fill.make {
+            background: linear-gradient(90deg, #059669, #10b981);
+        }
+
+        .prob-fill.miss {
+            background: linear-gradient(90deg, #dc2626, #ef4444);
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .stat-box {
+            background: rgba(255,255,255,0.05);
+            padding: 12px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-label {
+            color: #6b7280;
+            font-size: 0.8rem;
+            margin-bottom: 4px;
+        }
+
+        .stat-value {
+            color: #f97316;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.2rem;
+            font-weight: bold;
+        }
+
+        .captured-preview {
+            margin-top: 15px;
+            text-align: center;
+        }
+
+        .captured-preview canvas {
+            border: 3px solid #10b981;
+            border-radius: 8px;
+            max-width: 200px;
+        }
+
+        .captured-preview .label {
+            color: #6b7280;
+            font-size: 0.85rem;
+            margin-top: 8px;
+        }
+
+        /* Backend status */
+        .backend-status {
+            position: fixed;
+            bottom: 15px;
+            right: 15px;
+            background: rgba(0,0,0,0.85);
+            padding: 8px 15px;
+            border-radius: 6px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.8rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+        }
+
+        .status-dot.online { background: #10b981; }
+        .status-dot.offline { background: #ef4444; }
+        .status-dot.checking { background: #fbbf24; animation: blink 1s infinite; }
+
+        @keyframes blink {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.3; }
+        }
+
+        /* Loading spinner */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.85);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .loading-overlay.visible {
+            display: flex;
+        }
+
+        .spinner {
+            width: 60px;
+            height: 60px;
+            border: 4px solid #374151;
+            border-top-color: #f97316;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="loading-overlay" id="loading">
+        <div class="spinner"></div>
+    </div>
+
+    <h1>🎮 Live Game Mode</h1>
+    <p class="subtitle">Real-time free throw prediction</p>
+
+    <div class="instruction-box">
+        <div style="margin-bottom: 10px; color: #9ca3af;">
+            Watch the video. Press the key at the exact moment of release.
+        </div>
+        <div class="key-visual">SPACEBAR</div>
+        <div style="margin-top: 10px; color: #6b7280; font-size: 0.9rem;">
+            Result appears before the ball reaches the basket
+        </div>
+    </div>
+
+    <div class="upload-zone" id="uploadZone">
+        <input type="file" id="fileInput" accept="video/*">
+        <div style="font-size: 3rem; margin-bottom: 15px;">📹</div>
+        <div style="font-size: 1.2rem; margin-bottom: 8px;">Drop video here or click to upload</div>
+        <div style="color: #6b7280;">MP4, MOV, AVI supported</div>
+    </div>
+
+    <div class="video-container" id="videoContainer">
+        <video id="video"></video>
+        <div class="flash-overlay" id="flash"></div>
+        <div class="capture-indicator" id="captureIndicator">
+            <div class="icon">📸</div>
+            <div>Frame Captured!</div>
+        </div>
+    </div>
+
+    <div class="status-bar hidden" id="statusBar">
+        <div class="status ready" id="status">Press PLAY, then SPACEBAR at release</div>
+        <div class="timer" id="timer">0:00.000</div>
+    </div>
+
+    <div class="controls" id="controls">
+        <button class="primary" id="playBtn" onclick="togglePlay()">▶ PLAY</button>
+        <button class="secondary" onclick="resetAll()">↺ RESET</button>
+    </div>
+
+    <div class="result-panel" id="resultPanel">
+        <div class="result-card">
+            <div class="prediction-display">
+                <div class="big-prediction" id="bigPrediction">-</div>
+                <div class="prediction-subtitle" id="predictionSubtitle"></div>
+
+                <div class="captured-preview">
+                    <canvas id="capturedCanvas" width="200" height="112"></canvas>
+                    <div class="label" id="captureTimeLabel">-</div>
+                </div>
+            </div>
+
+            <div class="details-section">
+                <div class="prob-row">
+                    <div class="prob-header">
+                        <span>MAKE</span>
+                        <span id="makePct">0%</span>
+                    </div>
+                    <div class="prob-bar">
+                        <div class="prob-fill make" id="makeBar" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <div class="prob-row">
+                    <div class="prob-header">
+                        <span>MISS</span>
+                        <span id="missPct">0%</span>
+                    </div>
+                    <div class="prob-bar">
+                        <div class="prob-fill miss" id="missBar" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <div class="stats-grid">
+                    <div class="stat-box">
+                        <div class="stat-label">Confidence</div>
+                        <div class="stat-value" id="confValue">-</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Expected Accuracy</div>
+                        <div class="stat-value" id="accValue">-</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Capture Time</div>
+                        <div class="stat-value" id="timeValue">-</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">Edge</div>
+                        <div class="stat-value" id="edgeValue">-</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="backend-status">
+        <div class="status-dot checking" id="backendDot"></div>
+        <span id="backendText">Checking...</span>
+    </div>
+
+    <script>
+        // Config
+        const API_URL = 'http://localhost:5000';
+
+        // Elements
+        const uploadZone = document.getElementById('uploadZone');
+        const fileInput = document.getElementById('fileInput');
+        const videoContainer = document.getElementById('videoContainer');
+        const video = document.getElementById('video');
+        const flash = document.getElementById('flash');
+        const captureIndicator = document.getElementById('captureIndicator');
+        const statusBar = document.getElementById('statusBar');
+        const status = document.getElementById('status');
+        const timer = document.getElementById('timer');
+        const controls = document.getElementById('controls');
+        const playBtn = document.getElementById('playBtn');
+        const resultPanel = document.getElementById('resultPanel');
+        const loading = document.getElementById('loading');
+        const capturedCanvas = document.getElementById('capturedCanvas');
+
+        // State
+        let isPlaying = false;
+        let hasCaptured = false;
+        let capturedTime = null;
+        let capturedFrameData = null;
+
+        // Check backend
+        async function checkBackend() {
+            const dot = document.getElementById('backendDot');
+            const text = document.getElementById('backendText');
+
+            try {
+                const res = await fetch(`${API_URL}/health`);
+                const data = await res.json();
+
+                if (data.status === 'ok') {
+                    dot.className = 'status-dot online';
+                    text.textContent = data.model_loaded ? 'Backend Ready' : 'Model Missing';
+                } else {
+                    dot.className = 'status-dot offline';
+                    text.textContent = 'Backend Error';
+                }
+            } catch (e) {
+                dot.className = 'status-dot offline';
+                text.textContent = 'Backend Offline';
+            }
+        }
+
+        // Upload handling
+        uploadZone.addEventListener('click', () => fileInput.click());
+
+        uploadZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            uploadZone.classList.add('dragover');
+        });
+
+        uploadZone.addEventListener('dragleave', () => {
+            uploadZone.classList.remove('dragover');
+        });
+
+        uploadZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            uploadZone.classList.remove('dragover');
+            if (e.dataTransfer.files.length) {
+                loadVideo(e.dataTransfer.files[0]);
+            }
+        });
+
+        fileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) {
+                loadVideo(e.target.files[0]);
+            }
+        });
+
+        function loadVideo(file) {
+            const url = URL.createObjectURL(file);
+            video.src = url;
+
+            video.onloadedmetadata = () => {
+                uploadZone.classList.add('hidden');
+                videoContainer.classList.add('visible');
+                statusBar.classList.remove('hidden');
+                controls.classList.add('visible');
+            };
+        }
+
+        // Video controls
+        function togglePlay() {
+            if (hasCaptured) return;
+
+            if (video.paused) {
+                video.play();
+            } else {
+                video.pause();
+            }
+        }
+
+        video.addEventListener('play', () => {
+            isPlaying = true;
+            status.textContent = '▶ PLAYING - Hit SPACEBAR at release!';
+            status.className = 'status playing';
+            playBtn.textContent = '⏸ PAUSE';
+        });
+
+        video.addEventListener('pause', () => {
+            isPlaying = false;
+            if (!hasCaptured) {
+                status.textContent = '⏸ PAUSED';
+                status.className = 'status ready';
+                playBtn.textContent = '▶ PLAY';
+            }
+        });
+
+        video.addEventListener('timeupdate', () => {
+            const t = video.currentTime;
+            const mins = Math.floor(t / 60);
+            const secs = Math.floor(t % 60);
+            const ms = Math.floor((t % 1) * 1000);
+            timer.textContent = `${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
+        });
+
+        video.addEventListener('ended', () => {
+            isPlaying = false;
+            status.textContent = 'Video ended';
+            status.className = 'status ready';
+            playBtn.textContent = '▶ PLAY';
+        });
+
+        // Capture
+        function captureFrame() {
+            if (hasCaptured || !isPlaying) return;
+
+            hasCaptured = true;
+            capturedTime = video.currentTime;
+            video.pause();
+
+            // Flash effect
+            flash.classList.add('flash');
+            setTimeout(() => flash.classList.remove('flash'), 150);
+
+            // Indicator
+            captureIndicator.classList.add('visible');
+            setTimeout(() => captureIndicator.classList.remove('visible'), 800);
+
+            // Capture frame to canvas
+            const ctx = capturedCanvas.getContext('2d');
+            ctx.drawImage(video, 0, 0, 200, 112);
+            capturedFrameData = capturedCanvas.toDataURL('image/jpeg', 0.9);
+
+            // Update status
+            status.textContent = '🔄 Running prediction...';
+            status.className = 'status predicting';
+
+            // Format capture time
+            const mins = Math.floor(capturedTime / 60);
+            const secs = Math.floor(capturedTime % 60);
+            const ms = Math.floor((capturedTime % 1) * 1000);
+            document.getElementById('captureTimeLabel').textContent =
+                `Captured at ${mins}:${secs.toString().padStart(2, '0')}.${ms.toString().padStart(3, '0')}`;
+
+            // Send to backend
+            runPrediction();
+        }
+
+        async function runPrediction() {
+            loading.classList.add('visible');
+
+            try {
+                const response = await fetch(`${API_URL}/predict_frame`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ frame: capturedFrameData })
+                });
+
+                if (!response.ok) throw new Error('Prediction failed');
+
+                const result = await response.json();
+                displayResult(result);
+
+            } catch (e) {
+                console.error('Prediction error:', e);
+                status.textContent = '❌ Prediction failed - Is backend running?';
+                status.className = 'status ready';
+                hasCaptured = false;
+            }
+
+            loading.classList.remove('visible');
+        }
+
+        function displayResult(result) {
+            status.textContent = '✓ Prediction complete!';
+            status.className = 'status captured';
+
+            const makeProb = result.make_prob * 100;
+            const missProb = result.miss_prob * 100;
+            const confidence = result.confidence * 100;
+            const accuracy = result.expected_accuracy * 100;
+            const edge = (result.expected_accuracy - 0.5) * 100;
+
+            // Big prediction
+            const bigPrediction = document.getElementById('bigPrediction');
+            const predictionSubtitle = document.getElementById('predictionSubtitle');
+
+            if (confidence < 30) {
+                bigPrediction.textContent = '⚪ NO BET';
+                bigPrediction.className = 'big-prediction wait';
+                predictionSubtitle.textContent = 'Low confidence';
+            } else if (result.prediction === 'MAKE') {
+                bigPrediction.textContent = '🟢 MAKE';
+                bigPrediction.className = 'big-prediction make';
+                predictionSubtitle.textContent = `${makeProb.toFixed(1)}% probability`;
+            } else {
+                bigPrediction.textContent = '🔴 MISS';
+                bigPrediction.className = 'big-prediction miss';
+                predictionSubtitle.textContent = `${missProb.toFixed(1)}% probability`;
+            }
+
+            // Probability bars
+            document.getElementById('makePct').textContent = makeProb.toFixed(1) + '%';
+            document.getElementById('missPct').textContent = missProb.toFixed(1) + '%';
+            document.getElementById('makeBar').style.width = makeProb + '%';
+            document.getElementById('missBar').style.width = missProb + '%';
+
+            // Stats
+            document.getElementById('confValue').textContent = confidence.toFixed(0) + '%';
+            document.getElementById('accValue').textContent = accuracy.toFixed(1) + '%';
+            document.getElementById('timeValue').textContent = capturedTime.toFixed(3) + 's';
+            document.getElementById('edgeValue').textContent = '+' + edge.toFixed(1) + '%';
+
+            // Show result panel
+            resultPanel.classList.add('visible');
+        }
+
+        function resetAll() {
+            video.pause();
+            video.currentTime = 0;
+            isPlaying = false;
+            hasCaptured = false;
+            capturedTime = null;
+            capturedFrameData = null;
+
+            status.textContent = 'Press PLAY, then SPACEBAR at release';
+            status.className = 'status ready';
+            playBtn.textContent = '▶ PLAY';
+            resultPanel.classList.remove('visible');
+
+            // Clear canvas
+            const ctx = capturedCanvas.getContext('2d');
+            ctx.clearRect(0, 0, 200, 112);
+        }
+
+        // Keyboard
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+
+                if (hasCaptured) {
+                    // Do nothing if already captured
+                } else if (isPlaying) {
+                    captureFrame();
+                } else {
+                    togglePlay();
+                }
+            }
+        });
+
+        // Init
+        checkBackend();
+        setInterval(checkBackend, 10000);
+    </script>
+</body>
+</html>

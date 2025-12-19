@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+venv/
+ENV/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log
+logs/
+
+# Model checkpoints (exclude large training checkpoints, but keep final models)
+*.ckpt
+checkpoints/
+# Keep .pth files for trained models
+
+# Large data folders (local only)
+data/hq_videos/
+viz/
+data/videos/
+
+Basketball_51 dataset/
+node_modules/
+package-lock.json
+*/public/
+*/.next/
+*/next-env.d.ts

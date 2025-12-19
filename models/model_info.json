@@ -1,0 +1,65 @@
+{
+  "model_name": "KeyJointNet",
+  "checkpoint_file": "best_merged_calibrated.pth",
+  "date": "2025-12-18",
+
+  "performance": {
+    "cross_validation_accuracy": 0.828,
+    "cross_validation_auc": 0.841,
+    "optimized_accuracy": 0.9195,
+    "optimized_auc": 0.9663,
+    "optimal_threshold": 0.64
+  },
+
+  "confidence_analysis": {
+    "miss_accuracy_below_0.4": 1.0,
+    "miss_samples_below_0.4": 88,
+    "make_accuracy_above_0.7": 0.879,
+    "make_samples_above_0.7": 33
+  },
+
+  "architecture": {
+    "num_joints": 15,
+    "hidden_dim": 64,
+    "dropout": 0.4,
+    "in_channels": 9
+  },
+
+  "key_joints": [0, 5, 6, 7, 8, 41, 62, 9, 10, 69, 21, 25, 29, 64, 66],
+  "key_joint_names": [
+    "nose", "left_shoulder", "right_shoulder",
+    "left_elbow", "right_elbow",
+    "right_wrist", "left_wrist",
+    "left_hip", "right_hip", "neck",
+    "thumb_tip", "index_tip", "middle_tip",
+    "right_olecranon", "right_cubital_fossa"
+  ],
+
+  "dataset": {
+    "strategy": "original_curated + mhr70_misses_only",
+    "total_samples": 174,
+    "makes": 42,
+    "misses": 132,
+    "sources": {
+      "original_curated": 102,
+      "mhr70_misses": 72
+    }
+  },
+
+  "training": {
+    "optimizer": "AdamW",
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "loss": "FocalLoss",
+    "focal_gamma": 2.0,
+    "epochs": 100,
+    "early_stopping_patience": 20,
+    "batch_size": 16
+  },
+
+  "calibration": {
+    "method": "Platt Scaling",
+    "calibrator_coef": [[2.4002755160298297]],
+    "calibrator_intercept": [-1.8751197453911295]
+  }
+}
